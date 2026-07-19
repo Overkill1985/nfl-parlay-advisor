@@ -6,6 +6,9 @@ Then open http://localhost:8787
 import json
 import mimetypes
 import os
+import threading
+import time
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -15,6 +18,7 @@ import parlay_engine
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 SEASON = 2026
 PORT = 8787
+REFRESH_INTERVAL_SECONDS = espn_client.CACHE_TTL_SECONDS  # keep the cache from ever going stale
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -96,7 +100,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send_file(file_path)
 
 
+def _background_refresh_loop():
+    """Keeps the projections cache warm on its own, so the app has fresh data
+    even if nobody happens to visit right after ESPN publishes a new week's
+    projections. Just a timer loop - no external scheduler needed."""
+    while True:
+        time.sleep(REFRESH_INTERVAL_SECONDS)
+        try:
+            espn_client.get_projections(SEASON, force_refresh=True)
+            print("Background refresh: projections cache updated")
+        except Exception:
+            print("Background refresh failed:")
+            traceback.print_exc()
+
+
 def main():
+    threading.Thread(target=_background_refresh_loop, daemon=True).start()
+
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"NFL Parlay Advisor running at http://localhost:{PORT}")
     try:
