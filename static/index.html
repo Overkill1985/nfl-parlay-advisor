@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NFL Fantasy Parlay Advisor</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>NFL Fantasy Parlay Advisor</h1>
+  <p class="subtitle">Weekly prop parlays built from ESPN's fantasy projections</p>
+</header>
+
+<div class="disclaimer">
+  <strong>Informational only, not gambling advice.</strong>
+  Legs use ESPN's real per-week projection for a player when one has been published (usually a few days before that week's games).
+  Until then, a leg falls back to <em>season-pace</em> estimate (season projection &divide; 17) with wider assumed variance &mdash;
+  each leg is tagged with which source it used. Hit probabilities are statistical estimates from an assumed variance model, not
+  market odds, and legs are treated as independent even when they aren&rsquo;t (e.g. a QB and their own WR).
+  Nothing here places a bet or moves money.
+</div>
+
+<section class="controls">
+  <label>
+    Week
+    <select id="week"></select>
+  </label>
+  <label>
+    Legs
+    <select id="numLegs">
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+    </select>
+  </label>
+  <label>
+    Risk
+    <select id="risk">
+      <option value="safe">Safe (higher hit rate, lower payout)</option>
+      <option value="balanced" selected>Balanced</option>
+      <option value="boom">Boom (lower hit rate, higher payout)</option>
+    </select>
+  </label>
+  <label>
+    Position
+    <select id="position">
+      <option value="ALL" selected>All</option>
+      <option value="QB">QB</option>
+      <option value="RB">RB</option>
+      <option value="WR">WR</option>
+      <option value="TE">TE</option>
+    </select>
+  </label>
+  <button id="generate">Generate Parlays</button>
+  <button id="refreshData" title="Re-fetch projections from ESPN">Refresh Data</button>
+  <span id="status"></span>
+</section>
+
+<section id="parlays"></section>
+
+<section class="browse">
+  <h2>Browse Season Projections</h2>
+  <input id="playerSearch" type="text" placeholder="Search player name...">
+  <div id="playerTableWrap"></div>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
