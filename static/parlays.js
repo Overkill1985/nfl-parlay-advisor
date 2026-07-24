@@ -29,6 +29,16 @@ function fmtLeg(leg) {
   return `${leg.player} (${leg.team} ${leg.position}) — ${leg.direction} ${leg.line} ${leg.label} ${sourceBadge}`;
 }
 
+// Registered by picks.js once it loads; kept optional here so parlays.js has
+// no hard dependency on picks.js load order.
+function trackLeg(leg) {
+  if (window.prefillPickForm) {
+    window.prefillPickForm(leg);
+    switchTab("picks");
+  }
+}
+window.trackLeg = trackLeg;
+
 function renderParlays(data) {
   if (data.error) {
     parlaysEl.innerHTML = `<p style="color:#e0654e">Error: ${data.error}</p>`;
@@ -39,13 +49,20 @@ function renderParlays(data) {
     return;
   }
 
+  window._lastLegsById = window._lastLegsById || {};
+
   const cards = data.parlays.map((p, i) => {
-    const legRows = p.legs.map(leg => `
+    const legRows = p.legs.map((leg, li) => {
+      const legKey = `${i}-${li}`;
+      window._lastLegsById[legKey] = leg;
+      return `
       <div class="leg-row">
         <span class="leg-desc">${fmtLeg(leg)}</span>
         <span class="leg-prob">${(leg.probability * 100).toFixed(0)}%</span>
+        <button class="track-btn" data-leg-key="${legKey}" title="Track this leg with your own sportsbook odds">Track</button>
       </div>
-    `).join("");
+    `;
+    }).join("");
 
     const corrBadge = p.has_same_team_correlation
       ? `<span class="badge" title="Two legs share the same NFL team — their outcomes may be correlated, not independent as the math assumes">correlated legs</span>`
@@ -68,6 +85,13 @@ function renderParlays(data) {
     : `all ${data.legs_from_season_pace} legs are season-pace estimates — ESPN hasn't published Week ${data.week} projections yet`;
 
   parlaysEl.innerHTML = `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary}) &middot; showing top ${data.parlays.length}</p>` + cards;
+
+  parlaysEl.querySelectorAll(".track-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const leg = window._lastLegsById[btn.dataset.legKey];
+      if (leg) trackLeg({ ...leg, week: Number(weekSelect.value || currentWeek) });
+    });
+  });
 }
 
 async function generateParlays() {

@@ -14,57 +14,127 @@
 
 <div class="disclaimer">
   <strong>Informational only, not gambling advice.</strong>
-  Legs use ESPN's real per-week projection for a player when one has been published (usually a few days before that week's games).
-  Until then, a leg falls back to <em>season-pace</em> estimate (season projection &divide; 17) with wider assumed variance &mdash;
-  each leg is tagged with which source it used. Hit probabilities are statistical estimates from an assumed variance model, not
-  market odds, and legs are treated as independent even when they aren&rsquo;t (e.g. a QB and their own WR).
-  Nothing here places a bet or moves money.
+  Model legs use ESPN's real per-week projection for a player when one has been published, falling back to a season-pace
+  estimate otherwise. Hit probabilities and any "edge" shown against your own entered odds are statistical estimates from
+  an assumed variance model, not market truth, and legs are treated as independent even when they aren&rsquo;t. Nothing
+  here places a bet or moves money &mdash; entering your own sportsbook odds is for your own tracking only.
 </div>
 
-<section class="controls">
-  <label>
-    Week
-    <select id="week"></select>
-  </label>
-  <label>
-    Legs
-    <select id="numLegs">
-      <option value="2">2</option>
-      <option value="3" selected>3</option>
-      <option value="4">4</option>
-    </select>
-  </label>
-  <label>
-    Risk
-    <select id="risk">
-      <option value="safe">Safe (higher hit rate, lower payout)</option>
-      <option value="balanced" selected>Balanced</option>
-      <option value="boom">Boom (lower hit rate, higher payout)</option>
-    </select>
-  </label>
-  <label>
-    Position
-    <select id="position">
-      <option value="ALL" selected>All</option>
-      <option value="QB">QB</option>
-      <option value="RB">RB</option>
-      <option value="WR">WR</option>
-      <option value="TE">TE</option>
-    </select>
-  </label>
-  <button id="generate">Generate Parlays</button>
-  <button id="refreshData" title="Re-fetch projections from ESPN">Refresh Data</button>
-  <span id="status"></span>
-</section>
+<nav class="tab-nav">
+  <button data-tab="parlays" class="active">Parlays</button>
+  <button data-tab="picks">My Picks</button>
+  <button data-tab="dashboard">Dashboard</button>
+  <button data-tab="history">History</button>
+</nav>
 
-<section id="parlays"></section>
+<div id="tab-parlays" class="tab-panel">
+  <section class="controls">
+    <label>
+      Week
+      <select id="week"></select>
+    </label>
+    <label>
+      Legs
+      <select id="numLegs">
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+      </select>
+    </label>
+    <label>
+      Risk
+      <select id="risk">
+        <option value="safe">Safe (higher hit rate, lower payout)</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="boom">Boom (lower hit rate, higher payout)</option>
+      </select>
+    </label>
+    <label>
+      Position
+      <select id="position">
+        <option value="ALL" selected>All</option>
+        <option value="QB">QB</option>
+        <option value="RB">RB</option>
+        <option value="WR">WR</option>
+        <option value="TE">TE</option>
+      </select>
+    </label>
+    <button id="generate">Generate Parlays</button>
+    <button id="refreshData" title="Re-fetch projections from ESPN">Refresh Data</button>
+    <span id="status"></span>
+  </section>
 
-<section class="browse">
-  <h2>Browse Season Projections</h2>
-  <input id="playerSearch" type="text" placeholder="Search player name...">
-  <div id="playerTableWrap"></div>
-</section>
+  <section id="parlays"></section>
 
-<script src="/app.js"></script>
+  <section class="browse">
+    <h2>Browse Season Projections</h2>
+    <input id="playerSearch" type="text" placeholder="Search player name...">
+    <div id="playerTableWrap"></div>
+  </section>
+</div>
+
+<div id="tab-picks" class="tab-panel hidden">
+  <section class="picks-builder">
+    <h2>Track a Pick</h2>
+    <p class="section-hint">
+      Record real sportsbook odds for a leg you're considering &mdash; either one the model generated (use "Track this
+      leg" from the Parlays tab) or your own custom player prop, moneyline, spread, or total.
+    </p>
+    <form id="pickForm" class="pick-form">
+      <label>Market
+        <select name="market_type" required>
+          <option value="player_prop">Player Prop</option>
+          <option value="moneyline">Moneyline</option>
+          <option value="spread">Spread</option>
+          <option value="total">Total</option>
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="considered" selected>Considered</option>
+          <option value="placed">Placed</option>
+        </select>
+      </label>
+      <label>Player <input name="player_name" type="text" placeholder="e.g. Jahmyr Gibbs"></label>
+      <label>Team <input name="team" type="text" placeholder="e.g. DET"></label>
+      <label>Opponent <input name="opponent" type="text" placeholder="e.g. GB"></label>
+      <label>Week <input name="week" type="number" min="1" max="18"></label>
+      <label>Stat / Label <input name="label" type="text" placeholder="e.g. Rushing Yards"></label>
+      <label>Direction
+        <select name="direction">
+          <option value="Over">Over</option>
+          <option value="Under">Under</option>
+          <option value="Yes">Yes</option>
+        </select>
+      </label>
+      <label>Line entered <input name="line_entered" type="number" step="0.5"></label>
+      <label>Sportsbook <input name="sportsbook" type="text" placeholder="e.g. DraftKings"></label>
+      <label>Odds (American) <input name="odds_american" type="number" step="1" placeholder="e.g. -115" required></label>
+      <label>Model probability <input name="model_probability" type="number" step="0.01" min="0" max="1" readonly></label>
+      <label>Model line <input name="model_line" type="number" step="0.5" readonly></label>
+      <label>Notes <input name="notes" type="text"></label>
+      <input type="hidden" name="source_snapshot_leg" value="">
+      <button type="submit">Add Pick</button>
+      <span id="pickFormStatus"></span>
+    </form>
+  </section>
+
+  <section class="picks-list">
+    <h2>Tracked Picks</h2>
+    <div id="picksTableWrap"></div>
+  </section>
+</div>
+
+<div id="tab-dashboard" class="tab-panel hidden">
+  <p class="section-hint">Injury, usage, and weather dashboard — coming soon.</p>
+</div>
+
+<div id="tab-history" class="tab-panel hidden">
+  <p class="section-hint">Historical tracking and backtesting — coming soon.</p>
+</div>
+
+<script src="/common.js"></script>
+<script src="/parlays.js"></script>
+<script src="/picks.js"></script>
 </body>
 </html>

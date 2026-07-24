@@ -167,6 +167,112 @@ class Handler(BaseHTTPRequestHandler):
         }
 
 
+    # -- routes: picks --------------------------------------------------
+
+    NUMERIC_PICK_FIELDS = {
+        "model_line", "model_probability", "odds_american", "opening_odds_american",
+        "closing_odds_american", "line_entered", "stake", "result_profit_loss",
+        "actual_value", "player_id", "source_snapshot_id", "parlay_group_id",
+        "season", "week",
+    }
+
+    @staticmethod
+    def _validate_pick_fields(fields):
+        if "status" in fields and fields["status"] not in storage.PICK_STATUSES:
+            raise ApiError(f"Invalid status. Must be one of {sorted(storage.PICK_STATUSES)}")
+        if "market_type" in fields and fields["market_type"] not in storage.MARKET_TYPES:
+            raise ApiError(f"Invalid market_type. Must be one of {sorted(storage.MARKET_TYPES)}")
+        for key in Handler.NUMERIC_PICK_FIELDS & fields.keys():
+            val = fields[key]
+            if val is not None and not isinstance(val, (int, float)):
+                raise ApiError(f"Field '{key}' must be a number, got {type(val).__name__}")
+
+    @route("GET", r"^/api/picks$")
+    def list_picks_route(self, query):
+        filters = {}
+        for key in ("status", "market_type"):
+            if key in query:
+                filters[key] = query[key][0]
+        for key in ("season", "week", "parlay_group_id"):
+            if key in query:
+                filters[key] = int(query[key][0])
+        return {"picks": storage.list_picks(**filters)}
+
+    @route("POST", r"^/api/picks$")
+    def create_pick_route(self, query):
+        body = self._read_json_body()
+        if "market_type" not in body:
+            raise ApiError("market_type is required")
+        self._validate_pick_fields(body)
+        pick_id = storage.create_pick(**body)
+        return storage.get_pick(pick_id)
+
+    @route("GET", r"^/api/picks/(?P<pick_id>\d+)$")
+    def get_pick_route(self, query, pick_id):
+        pick = storage.get_pick(int(pick_id))
+        if pick is None:
+            raise ApiError("Pick not found", status=404)
+        return pick
+
+    @route("PUT", r"^/api/picks/(?P<pick_id>\d+)$")
+    def update_pick_route(self, query, pick_id):
+        body = self._read_json_body()
+        self._validate_pick_fields(body)
+        if not storage.update_pick(int(pick_id), **body):
+            raise ApiError("Pick not found", status=404)
+        return storage.get_pick(int(pick_id))
+
+    @route("DELETE", r"^/api/picks/(?P<pick_id>\d+)$")
+    def delete_pick_route(self, query, pick_id):
+        if not storage.delete_pick(int(pick_id)):
+            raise ApiError("Pick not found", status=404)
+        return {"deleted": True}
+
+    # -- routes: parlay groups -------------------------------------------
+
+    @route("GET", r"^/api/parlay-groups$")
+    def list_parlay_groups_route(self, query):
+        return {"parlay_groups": storage.list_parlay_groups()}
+
+    @route("POST", r"^/api/parlay-groups$")
+    def create_parlay_group_route(self, query):
+        body = self._read_json_body()
+        stake = body.get("total_stake")
+        if stake is not None and not isinstance(stake, (int, float)):
+            raise ApiError("total_stake must be a number")
+        group_id = storage.create_parlay_group(
+            sportsbook=body.get("sportsbook"),
+            total_stake=stake,
+            notes=body.get("notes"),
+        )
+        return storage.get_parlay_group(group_id)
+
+    @route("GET", r"^/api/parlay-groups/(?P<group_id>\d+)$")
+    def get_parlay_group_route(self, query, group_id):
+        group = storage.get_parlay_group(int(group_id))
+        if group is None:
+            raise ApiError("Parlay group not found", status=404)
+        return group
+
+    @route("PUT", r"^/api/parlay-groups/(?P<group_id>\d+)$")
+    def update_parlay_group_route(self, query, group_id):
+        body = self._read_json_body()
+        stake = body.get("total_stake")
+        if stake is not None and not isinstance(stake, (int, float)):
+            raise ApiError("total_stake must be a number")
+        allowed = {"sportsbook", "total_stake", "notes"}
+        fields = {k: v for k, v in body.items() if k in allowed}
+        if not storage.update_parlay_group(int(group_id), **fields):
+            raise ApiError("Parlay group not found", status=404)
+        return storage.get_parlay_group(int(group_id))
+
+    @route("DELETE", r"^/api/parlay-groups/(?P<group_id>\d+)$")
+    def delete_parlay_group_route(self, query, group_id):
+        if not storage.delete_parlay_group(int(group_id)):
+            raise ApiError("Parlay group not found", status=404)
+        return {"deleted": True}
+
+
 def _background_refresh_loop():
     """Keeps the projections cache warm on its own, so the app has fresh data
     even if nobody happens to visit right after ESPN publishes a new week's

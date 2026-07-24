@@ -146,8 +146,16 @@ section#parlays, section.browse {
 
 .leg-row:first-of-type { border-top: none; }
 
+.leg-row { gap: 0.5rem; align-items: center; }
 .leg-row .leg-desc { flex: 1; }
-.leg-row .leg-prob { color: var(--muted); width: 5rem; text-align: right; }
+.leg-row .leg-prob { color: var(--muted); width: 3.5rem; text-align: right; }
+.leg-row .track-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
 
 .badge {
   display: inline-block;
@@ -189,4 +197,95 @@ th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+/* -- tabs ------------------------------------------------------------- */
+
+.tab-nav {
+  max-width: 960px;
+  margin: 0 auto 1.25rem;
+  display: flex;
+  gap: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-nav button {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 0.6rem 0.9rem;
+  font-weight: 600;
+}
+
+.tab-nav button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-panel.hidden { display: none; }
+
+.section-hint {
+  max-width: 960px;
+  margin: 0 auto 1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* -- picks tab ---------------------------------------------------------- */
+
+.picks-builder, .picks-list {
+  max-width: 960px;
+  margin: 0 auto 2rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+}
+
+.picks-builder h2, .picks-list h2 { margin-top: 0; font-size: 1.1rem; }
+
+.pick-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem 1rem;
+  align-items: end;
+}
+
+.pick-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.78rem;
+  color: var(--muted);
+  gap: 0.3rem;
+}
+
+.pick-form button {
+  height: fit-content;
+  align-self: end;
+}
+
+#pickFormStatus {
+  font-size: 0.8rem;
+  color: var(--muted);
+  align-self: center;
+}
+
+.grade-select, .closing-input {
+  padding: 0.3rem 0.4rem;
+  font-size: 0.8rem;
+}
+
+.closing-input { width: 6rem; }
+
+.save-btn, .delete-btn {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.delete-btn {
+  background: transparent;
+  color: #e0654e;
+  border: 1px solid #e0654e;
 }
