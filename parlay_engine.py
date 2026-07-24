@@ -15,6 +15,7 @@ import itertools
 import math
 
 import espn_client
+import odds_math
 
 # (stat field, display label, unit, applicable positions, coefficient of variation)
 YARDAGE_PROPS = [
@@ -165,13 +166,9 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
         teams = [leg["team"] for leg in combo]
         same_team_pairs = len(teams) - len(set(teams))
 
-        decimal_odds = round(1 / combined_prob, 2) if combined_prob > 0 else None
-        american_odds = None
-        if decimal_odds:
-            if decimal_odds >= 2:
-                american_odds = round((decimal_odds - 1) * 100)
-            else:
-                american_odds = round(-100 / (decimal_odds - 1))
+        decimal_odds = odds_math.fair_decimal_odds(combined_prob)
+        decimal_odds = round(decimal_odds, 2) if decimal_odds else None
+        american_odds = odds_math.decimal_to_american(decimal_odds)
 
         best.append({
             "legs": list(combo),
@@ -179,6 +176,7 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
             "estimated_decimal_odds": decimal_odds,
             "estimated_american_odds": american_odds,
             "has_same_team_correlation": same_team_pairs > 0,
+            "risk_score": odds_math.risk_score([leg["probability"] for leg in combo]),
         })
 
     best.sort(key=lambda pl: pl["combined_probability"], reverse=True)

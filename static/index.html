@@ -121,7 +121,19 @@
 
   <section class="picks-list">
     <h2>Tracked Picks</h2>
+    <p class="section-hint">Assign picks to a parlay group below to calculate combined probability, payout, and EV for the whole ticket.</p>
     <div id="picksTableWrap"></div>
+  </section>
+
+  <section class="picks-list">
+    <h2>Parlay Groups</h2>
+    <form id="groupForm" class="pick-form">
+      <label>Sportsbook <input name="sportsbook" type="text" placeholder="e.g. DraftKings"></label>
+      <label>Stake ($) <input name="total_stake" type="number" step="0.01" min="0" placeholder="e.g. 20"></label>
+      <label>Notes <input name="notes" type="text"></label>
+      <button type="submit">New Parlay Group</button>
+    </form>
+    <div id="groupsWrap"></div>
   </section>
 </div>
 

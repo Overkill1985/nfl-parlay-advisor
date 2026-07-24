@@ -14,6 +14,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import espn_client
+import odds_math
 import parlay_engine
 import storage
 
@@ -30,6 +31,21 @@ class ApiError(Exception):
         super().__init__(message)
         self.message = message
         self.status = status
+
+
+def _describe_pick(pick):
+    if pick["player_name"]:
+        parts = [pick["player_name"]]
+        if pick["direction"] and pick["line_entered"] is not None:
+            parts.append(f"{pick['direction']} {pick['line_entered']}")
+        elif pick["direction"]:
+            parts.append(pick["direction"])
+        if pick["label"]:
+            parts.append(pick["label"])
+        return " ".join(parts)
+    if pick["team"] and pick["opponent"]:
+        return f"{pick['team']} vs {pick['opponent']} ({pick['market_type']})"
+    return pick["market_type"]
 
 
 # Populated by @route as route handler methods are defined on Handler below.
@@ -271,6 +287,73 @@ class Handler(BaseHTTPRequestHandler):
         if not storage.delete_parlay_group(int(group_id)):
             raise ApiError("Parlay group not found", status=404)
         return {"deleted": True}
+
+    @route("GET", r"^/api/parlay-groups/(?P<group_id>\d+)/ev$")
+    def get_parlay_group_ev(self, query, group_id):
+        group = storage.get_parlay_group(int(group_id))
+        if group is None:
+            raise ApiError("Parlay group not found", status=404)
+
+        leg_results = []
+        excluded = []
+        odds_list = []
+        probabilities_used = []
+
+        for pick in group["picks"]:
+            if pick["odds_american"] is None:
+                excluded.append({"pick_id": pick["id"], "reason": "no odds entered yet"})
+                continue
+            implied = odds_math.implied_probability(pick["odds_american"])
+            model_prob = pick["model_probability"]
+            used_model = model_prob is not None
+            probability_used = model_prob if used_model else implied
+
+            odds_list.append(pick["odds_american"])
+            probabilities_used.append(probability_used)
+            leg_results.append({
+                "pick_id": pick["id"],
+                "description": _describe_pick(pick),
+                "odds_american": pick["odds_american"],
+                "implied_probability": round(implied, 4),
+                "model_probability": model_prob,
+                "probability_used": round(probability_used, 4),
+                "used_model": used_model,
+                "edge": round(probability_used - implied, 4) if used_model else 0.0,
+            })
+
+        if not odds_list:
+            return {
+                "group_id": group["id"], "legs": [], "excluded_legs": excluded,
+                "error": "No picks with odds entered yet",
+            }
+
+        combined_decimal = odds_math.combined_decimal_odds(odds_list)
+        combined_implied = 1 / combined_decimal
+        combined_model_prob = 1.0
+        for p in probabilities_used:
+            combined_model_prob *= p
+
+        stake = group.get("total_stake") or 100.0
+        ev = odds_math.expected_value(combined_model_prob, combined_decimal, stake)
+
+        return {
+            "group_id": group["id"],
+            "legs": leg_results,
+            "excluded_legs": excluded,
+            "num_legs": len(leg_results),
+            "stake": stake,
+            "combined_decimal_odds": round(combined_decimal, 3),
+            "combined_american_odds": odds_math.decimal_to_american(combined_decimal),
+            "combined_implied_probability": round(combined_implied, 4),
+            "combined_model_probability": round(combined_model_prob, 4),
+            "edge": round(combined_model_prob - combined_implied, 4),
+            "potential_payout": round(odds_math.payout(stake, combined_decimal), 2),
+            "potential_profit": round(odds_math.profit(stake, combined_decimal), 2),
+            "expected_value": round(ev, 2) if ev is not None else None,
+            "expected_value_pct": round(ev / stake, 4) if ev is not None and stake else None,
+            "risk_score": odds_math.risk_score(probabilities_used),
+            "all_legs_have_model_estimate": all(l["used_model"] for l in leg_results),
+        }
 
 
 def _background_refresh_loop():
