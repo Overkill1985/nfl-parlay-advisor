@@ -10,6 +10,7 @@ shortly before that week's games (historically a few days out). Before that,
 callers should fall back to season-long projection / 17 as a per-game
 estimate - see `get_week_stats` below, which does this automatically.
 """
+import datetime
 import json
 import os
 import time
@@ -18,6 +19,7 @@ import urllib.request
 CACHE_PATH = os.path.join(os.path.dirname(__file__), "cache", "projections.json")
 CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
 GAME_STATE_CACHE_TTL_SECONDS = 60 * 60  # 1 hour - current week rarely changes
+SCHEDULE_CACHE_TTL_SECONDS = 12 * 60 * 60  # 12 hours - matchups rarely change mid-week
 
 PLAYERS_URL_TMPL = (
     "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
@@ -26,6 +28,10 @@ PLAYERS_URL_TMPL = (
 GAME_STATE_URL_TMPL = (
     "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
     "?view=kona_game_state"
+)
+SCHEDULE_URL_TMPL = (
+    "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
+    "?view=proTeamSchedules_wl"
 )
 
 PRO_TEAM_ABBR = {
@@ -93,6 +99,68 @@ def get_current_week(season):
         json.dump({"season": season, "week": week}, f)
 
     return week
+
+
+def get_schedule(season, force_refresh=False):
+    """Weekly matchup data: {"weeks": {"1": {"KC": {"opponent": "DEN", "is_home":
+    True, "game_date": iso_str, "game_id": int}, ...}, ...}, "bye_weeks": {"KC": 5}}.
+
+    Used for same-game/opponent correlation detection and to know which date to
+    pull a weather forecast for. Comes from the same ESPN API family as
+    everything else here - `proTeamSchedules_wl` on the season endpoint.
+    """
+    cache_path = os.path.join(os.path.dirname(__file__), "cache", "schedule.json")
+    if not force_refresh and os.path.exists(cache_path):
+        age = time.time() - os.path.getmtime(cache_path)
+        if age < SCHEDULE_CACHE_TTL_SECONDS:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("season") == season:
+                return cached
+
+    data = _get(SCHEDULE_URL_TMPL.format(season=season))
+    pro_teams = data.get("settings", {}).get("proTeams", [])
+
+    weeks = {}
+    bye_weeks = {}
+    for team in pro_teams:
+        team_id = team.get("id")
+        abbr = PRO_TEAM_ABBR.get(team_id)
+        if not abbr or abbr == "FA":
+            continue
+        if team.get("byeWeek"):
+            bye_weeks[abbr] = team["byeWeek"]
+
+        for week_str, games in team.get("proGamesByScoringPeriod", {}).items():
+            if not games:
+                continue
+            game = games[0]
+            is_home = game.get("homeProTeamId") == team_id
+            opponent_id = game.get("awayProTeamId") if is_home else game.get("homeProTeamId")
+            game_date_ms = game.get("date")
+            game_date_iso = (
+                datetime.datetime.utcfromtimestamp(game_date_ms / 1000).isoformat() + "Z"
+                if game_date_ms else None
+            )
+            weeks.setdefault(week_str, {})[abbr] = {
+                "opponent": PRO_TEAM_ABBR.get(opponent_id, "UNK"),
+                "is_home": is_home,
+                "game_date": game_date_iso,
+                "game_id": game.get("id"),
+            }
+
+    result = {
+        "season": season,
+        "fetched_at": time.time(),
+        "bye_weeks": bye_weeks,
+        "weeks": weeks,
+    }
+
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(result, f)
+
+    return result
 
 
 def _fetch_players_from_espn(season):
