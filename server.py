@@ -13,6 +13,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import correlation
 import espn_client
 import odds_math
 import parlay_engine
@@ -31,6 +32,17 @@ class ApiError(Exception):
         super().__init__(message)
         self.message = message
         self.status = status
+
+
+def _team_strength(players):
+    """Rough proxy for roster fantasy strength: total projected points/game
+    across all rostered skill players on a team. Only used as a last-resort,
+    clearly-labeled-speculative signal for game-script summaries when no
+    market line (moneyline/spread) has been entered for that game."""
+    strength = {}
+    for p in players:
+        strength[p["team"]] = strength.get(p["team"], 0.0) + p["projected_points_per_game"]
+    return strength
 
 
 def _describe_pick(pick):
@@ -153,6 +165,19 @@ class Handler(BaseHTTPRequestHandler):
         refresh = query.get("refresh", ["0"])[0] == "1"
         return espn_client.get_projections(SEASON, force_refresh=refresh)
 
+    @route("GET", r"^/api/schedule$")
+    def get_schedule_route(self, query):
+        schedule = espn_client.get_schedule(SEASON)
+        week = query.get("week", [None])[0]
+        if week:
+            return {
+                "season": SEASON,
+                "week": int(week),
+                "matchups": schedule["weeks"].get(week, {}),
+                "bye_weeks": schedule["bye_weeks"],
+            }
+        return schedule
+
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):
         num_legs = int(query.get("legs", ["3"])[0])
@@ -165,8 +190,11 @@ class Handler(BaseHTTPRequestHandler):
         week = int(query.get("week", [current_week])[0])
         week = max(1, min(espn_client.MAX_WEEK, week))
 
+        schedule = espn_client.get_schedule(SEASON)
+        team_strength = _team_strength(data["players"])
+
         legs = parlay_engine.build_legs(data["players"], week, risk=risk, position_filter=position)
-        parlays = parlay_engine.build_parlays(legs, num_legs=num_legs)
+        parlays = parlay_engine.build_parlays(legs, num_legs=num_legs, schedule=schedule, team_strength=team_strength)
         weekly_leg_count = sum(1 for l in legs if l["source"] == "weekly_projection")
         return {
             "season": SEASON,
@@ -336,9 +364,17 @@ class Handler(BaseHTTPRequestHandler):
         stake = group.get("total_stake") or 100.0
         ev = odds_math.expected_value(combined_model_prob, combined_decimal, stake)
 
+        schedule = espn_client.get_schedule(SEASON)
+        normalized = correlation.attach_opponents(
+            [correlation.from_pick(p) for p in group["picks"]], schedule
+        )
+        team_strength = _team_strength(espn_client.get_projections(SEASON)["players"])
+
         return {
             "group_id": group["id"],
             "legs": leg_results,
+            "correlation_warnings": correlation.analyze_correlations(normalized),
+            "game_script": correlation.generate_game_script_summary(normalized, team_strength),
             "excluded_legs": excluded,
             "num_legs": len(leg_results),
             "stake": stake,

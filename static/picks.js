@@ -152,6 +152,13 @@ function renderEvPanel(container, ev) {
     return;
   }
   const edgeColor = ev.edge >= 0 ? "var(--good)" : "#e0654e";
+  const warningLines = (ev.correlation_warnings || []).map(w => `
+    <div class="warning-line warning-${w.severity}">${escapeHtml(w.message)}</div>
+  `).join("");
+  const scriptLines = (ev.game_script || []).map(g => `
+    <div class="game-script-line">${escapeHtml(g.summary)}</div>
+  `).join("");
+
   container.innerHTML = `
     <div class="ev-panel">
       <div><strong>${ev.num_legs}</strong> leg(s) with odds entered
@@ -164,6 +171,8 @@ function renderEvPanel(container, ev) {
       <div>Stake: ${fmtMoney(ev.stake)} &rarr; Potential payout: ${fmtMoney(ev.potential_payout)} (profit ${fmtMoney(ev.potential_profit)})</div>
       <div>Expected value: <strong style="color:${ev.expected_value >= 0 ? "var(--good)" : "#e0654e"}">${fmtMoney(ev.expected_value)}</strong> (${fmtPct(ev.expected_value_pct)} of stake)</div>
       <div>Risk score: ${ev.risk_score}/100</div>
+      ${warningLines}
+      ${scriptLines}
     </div>
   `;
 }

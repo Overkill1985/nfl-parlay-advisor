@@ -14,6 +14,7 @@ All probabilities are illustrative, not market odds.
 import itertools
 import math
 
+import correlation
 import espn_client
 import odds_math
 
@@ -95,6 +96,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
                 "projected_avg": round(mean, 1),
                 "probability": round(prob, 3),
                 "source": source,
+                "week": week,
             })
 
         # Anytime TD (rush + rec TDs combined for skill positions, pass TD for QB)
@@ -120,6 +122,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
                     "projected_avg": round(td_lambda, 2),
                     "probability": round(prob, 3),
                     "source": source,
+                    "week": week,
                 })
 
     # Round-robin merge by stat category so a flat top-N slice still spans
@@ -145,7 +148,8 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
     return diversified
 
 
-def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinct_categories=True):
+def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinct_categories=True,
+                   schedule=None, team_strength=None):
     pool = legs[:candidate_pool]
     best = []
 
@@ -163,19 +167,21 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
         for leg in combo:
             combined_prob *= leg["probability"]
 
-        teams = [leg["team"] for leg in combo]
-        same_team_pairs = len(teams) - len(set(teams))
-
         decimal_odds = odds_math.fair_decimal_odds(combined_prob)
         decimal_odds = round(decimal_odds, 2) if decimal_odds else None
         american_odds = odds_math.decimal_to_american(decimal_odds)
+
+        normalized = correlation.attach_opponents(
+            [correlation.from_model_leg(leg) for leg in combo], schedule
+        )
 
         best.append({
             "legs": list(combo),
             "combined_probability": round(combined_prob, 4),
             "estimated_decimal_odds": decimal_odds,
             "estimated_american_odds": american_odds,
-            "has_same_team_correlation": same_team_pairs > 0,
+            "correlation_warnings": correlation.analyze_correlations(normalized),
+            "game_script": correlation.generate_game_script_summary(normalized, team_strength),
             "risk_score": odds_math.risk_score([leg["probability"] for leg in combo]),
         })
 
@@ -185,6 +191,7 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
         # Filtering by position can shrink the pool to fewer distinct
         # categories than num_legs (e.g. QB-only has 3 categories max).
         # Fall back to allowing repeated categories rather than showing nothing.
-        return build_parlays(legs, num_legs, candidate_pool, top_n, require_distinct_categories=False)
+        return build_parlays(legs, num_legs, candidate_pool, top_n, require_distinct_categories=False,
+                              schedule=schedule, team_strength=team_strength)
 
     return best[:top_n]

@@ -64,9 +64,18 @@ function renderParlays(data) {
     `;
     }).join("");
 
-    const corrBadge = p.has_same_team_correlation
-      ? `<span class="badge" title="Two legs share the same NFL team — their outcomes may be correlated, not independent as the math assumes">correlated legs</span>`
+    const warnings = p.correlation_warnings || [];
+    const corrBadge = warnings.length
+      ? `<span class="badge" title="${escapeHtml(warnings.map(w => w.message).join(" / "))}">${warnings.length} correlation note${warnings.length > 1 ? "s" : ""}</span>`
       : "";
+
+    const warningLines = warnings.map(w => `
+      <div class="warning-line warning-${w.severity}">${escapeHtml(w.message)}</div>
+    `).join("");
+
+    const scriptLines = (p.game_script || []).map(g => `
+      <div class="game-script-line">${escapeHtml(g.summary)}</div>
+    `).join("");
 
     return `
       <div class="parlay-card">
@@ -74,8 +83,10 @@ function renderParlays(data) {
           <div>#${i + 1} &middot; ${p.legs.length}-leg parlay ${corrBadge}</div>
           <div class="parlay-card__odds">Fair odds: ${p.estimated_decimal_odds}x (${p.estimated_american_odds > 0 ? "+" : ""}${p.estimated_american_odds})</div>
         </div>
-        <div class="parlay-card__prob">Estimated combined hit probability: ${(p.combined_probability * 100).toFixed(1)}%</div>
+        <div class="parlay-card__prob">Estimated combined hit probability: ${(p.combined_probability * 100).toFixed(1)}% &middot; risk score ${p.risk_score}/100</div>
         ${legRows}
+        ${warningLines}
+        ${scriptLines}
       </div>
     `;
   }).join("");

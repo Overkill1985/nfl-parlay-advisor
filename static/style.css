@@ -304,3 +304,20 @@ th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background
   padding: 0.35rem 0.6rem;
   font-size: 0.8rem;
 }
+
+.warning-line, .game-script-line {
+  font-size: 0.8rem;
+  padding: 0.4rem 0.6rem;
+  margin-top: 0.5rem;
+  border-radius: 6px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.warning-info { border-left-color: var(--good); }
+.warning-caution { border-left-color: var(--warn); }
+
+.game-script-line {
+  border-left-color: var(--accent);
+  font-style: italic;
+}
