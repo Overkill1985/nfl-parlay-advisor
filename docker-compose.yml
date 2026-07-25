@@ -1,0 +1,12 @@
+services:
+  nfl-parlay-advisor:
+    build: .
+    # Bound to the host's loopback only, matching the app's own no-auth,
+    # single-user design - drop the "127.0.0.1:" prefix only if you actually
+    # want this reachable from other machines on your network.
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./cache:/app/cache
+      - ./data:/app/data
+    restart: unless-stopped

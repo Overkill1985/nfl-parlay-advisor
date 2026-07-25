@@ -1,0 +1,15 @@
+.git
+.gitignore
+.claude
+_bmad
+_bmad-output
+docs
+__pycache__
+*.pyc
+tests
+Dockerfile
+.dockerignore
+docker-compose.yml
+cache/*.json
+data/*.db
+data/backups

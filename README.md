@@ -65,6 +65,20 @@ python server.py
 
 Then open **http://localhost:8787**.
 
+### Running in Docker
+
+```
+docker compose up --build
+```
+
+`cache/` and `data/` are mounted as volumes so the ESPN response cache and your tracked-picks
+sqlite db survive a rebuild. The port is published as `127.0.0.1:8787:8787` by default, matching
+this app's own no-auth, single-user design - drop the `127.0.0.1:` prefix in `docker-compose.yml`
+only if you actually want it reachable from other machines on your network. Internally the
+container always binds `0.0.0.0` (`HOST=0.0.0.0` in the `Dockerfile`) since that's required for
+Docker's port-forwarding to reach the process at all; real exposure is controlled by the port
+mapping, not the app.
+
 ## Using the app
 
 **Parlays tab** - generate model-scored parlays:

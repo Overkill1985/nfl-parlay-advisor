@@ -23,7 +23,12 @@ import weather
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 SEASON = 2026
-PORT = 8787
+PORT = int(os.environ.get("PORT", 8787))
+# Loopback-only by default, since this is a single-user app with no auth -
+# anyone who can reach this port can read/write your tracked picks. Only
+# override via HOST=0.0.0.0 in a container, where the port mapping itself
+# (e.g. `-p 127.0.0.1:8787:8787`) is what should control real exposure.
+HOST = os.environ.get("HOST", "127.0.0.1")
 REFRESH_INTERVAL_SECONDS = espn_client.CACHE_TTL_SECONDS  # keep the cache from ever going stale
 
 
@@ -603,7 +608,7 @@ def main():
     storage.init_db()
     threading.Thread(target=_background_refresh_loop, daemon=True).start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"NFL Parlay Advisor running at http://localhost:{PORT}")
     try:
         server.serve_forever()
