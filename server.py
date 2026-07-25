@@ -202,7 +202,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"^/api/schedule$")
     def get_schedule_route(self, query):
-        schedule = espn_client.get_schedule(SEASON)
+        refresh = query.get("refresh", ["0"])[0] == "1"
+        schedule = espn_client.get_schedule(SEASON, force_refresh=refresh)
         week = _query_int(query, "week")
         if week is not None:
             return {

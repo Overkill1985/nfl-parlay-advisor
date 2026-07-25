@@ -31,7 +31,7 @@ PICK_STATUS_FOR_GRADE = {GRADE_HIT: "graded_win", GRADE_MISS: "graded_loss", GRA
 
 
 def _now():
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 def _grade_over_under(direction, line, actual_value):

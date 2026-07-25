@@ -24,7 +24,7 @@ _init_lock = threading.Lock()
 
 
 def _now():
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 def get_connection():
