@@ -171,7 +171,12 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         rel_path = parsed.path.lstrip("/") or "index.html"
         file_path = os.path.normpath(os.path.join(STATIC_DIR, rel_path))
-        if not file_path.startswith(STATIC_DIR):
+        # A bare startswith(STATIC_DIR) check would also accept a sibling
+        # directory whose name happens to start with "static" (e.g.
+        # "static_backup") since that's a valid string prefix without being
+        # inside STATIC_DIR. Requiring the OS separator (or an exact match)
+        # closes that gap.
+        if file_path != STATIC_DIR and not file_path.startswith(STATIC_DIR + os.sep):
             self.send_error(403)
             return
         self._send_file(file_path)
@@ -318,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(f"Invalid status. Must be one of {sorted(storage.PICK_STATUSES)}")
         if "market_type" in fields and fields["market_type"] not in storage.MARKET_TYPES:
             raise ApiError(f"Invalid market_type. Must be one of {sorted(storage.MARKET_TYPES)}")
+        if fields.get("direction") is not None and fields["direction"] not in storage.PICK_DIRECTIONS:
+            raise ApiError(f"Invalid direction. Must be one of {sorted(storage.PICK_DIRECTIONS)}")
         for key in Handler.NUMERIC_PICK_FIELDS & fields.keys():
             val = fields[key]
             if val is not None and not isinstance(val, (int, float)):

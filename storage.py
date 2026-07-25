@@ -17,6 +17,8 @@ BACKUP_DIR = os.path.join(DB_DIR, "backups")
 
 PICK_STATUSES = {"considered", "placed", "graded_win", "graded_loss", "graded_push"}
 MARKET_TYPES = {"player_prop", "moneyline", "spread", "total"}
+# "Yes" covers anytime-TD-style picks, which have no line to be over/under.
+PICK_DIRECTIONS = {"Over", "Under", "Yes"}
 
 _init_lock = threading.Lock()
 
