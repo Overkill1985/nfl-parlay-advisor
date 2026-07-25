@@ -319,6 +319,102 @@ def delete_pick(pick_id):
 
 
 # ---------------------------------------------------------------------------
+# Model snapshots (calibration tracking - see history.py for how these are
+# used). Written automatically by the background refresh loop in server.py,
+# not by the user, and are effectively append-only/immutable once graded.
+# ---------------------------------------------------------------------------
+
+MODEL_SNAPSHOT_FIELDS = [
+    "season", "week", "player_id", "player_name", "team", "position",
+    "stat", "label", "direction", "line", "model_probability", "projected_avg",
+    "source", "risk_tier",
+]
+
+
+def upsert_model_snapshot(**fields):
+    """Inserts a model-generated leg snapshot, silently skipping if one
+    already exists for this (season, week, player_id, stat, direction,
+    risk_tier) - the background refresh loop calls this every cycle and
+    snapshots must stay immutable once written for calibration to mean
+    anything."""
+    unknown = set(fields) - set(MODEL_SNAPSHOT_FIELDS)
+    if unknown:
+        raise ValueError(f"Unknown model_snapshot field(s): {sorted(unknown)}")
+
+    columns = ["created_at"] + list(fields.keys())
+    values = [_now()] + list(fields.values())
+    placeholders = ", ".join("?" for _ in columns)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                f"INSERT OR IGNORE INTO model_snapshots ({', '.join(columns)}) VALUES ({placeholders})",
+                values,
+            )
+    finally:
+        conn.close()
+
+
+def list_ungraded_snapshots(season, week):
+    conn = get_connection()
+    try:
+        return [_row_to_dict(r) for r in conn.execute(
+            "SELECT * FROM model_snapshots WHERE season = ? AND week = ? AND grade_result IS NULL",
+            (season, week),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+
+def grade_snapshot(snapshot_id, actual_value, grade_result):
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE model_snapshots SET actual_value = ?, grade_result = ?, graded_at = ? WHERE id = ?",
+                (actual_value, grade_result, _now(), snapshot_id),
+            )
+    finally:
+        conn.close()
+
+
+def calibration_by_confidence_bucket(season=None):
+    """Buckets graded snapshots by model_probability into 10-point bands and
+    computes the realized hit rate per bucket - the concrete check of "did
+    our 60%-confidence legs actually hit ~60% of the time?"."""
+    where = "WHERE grade_result IS NOT NULL"
+    params = []
+    if season is not None:
+        where += " AND season = ?"
+        params.append(season)
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT model_probability, grade_result FROM model_snapshots {where}", params
+        ).fetchall()
+    finally:
+        conn.close()
+
+    buckets = {}
+    for row in rows:
+        bucket = min(90, int(row["model_probability"] * 10) * 10)
+        b = buckets.setdefault(bucket, {"total": 0, "hits": 0})
+        b["total"] += 1
+        if row["grade_result"] == "hit":
+            b["hits"] += 1
+
+    return [
+        {
+            "bucket_low": k, "bucket_high": k + 10,
+            "total": v["total"], "hits": v["hits"],
+            "realized_hit_rate": round(v["hits"] / v["total"], 4) if v["total"] else None,
+        }
+        for k, v in sorted(buckets.items())
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Export (human-readable escape hatch independent of sqlite)
 # ---------------------------------------------------------------------------
 

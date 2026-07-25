@@ -178,12 +178,73 @@
 </div>
 
 <div id="tab-history" class="tab-panel hidden">
-  <p class="section-hint">Historical tracking and backtesting — coming soon.</p>
+  <p class="section-hint">
+    Two different things live here. <strong>Model calibration</strong> checks whether this app's own generated
+    probabilities are accurate &mdash; it only covers weeks since snapshotting started, since ESPN has no historical
+    point-in-time projections to check against retroactively. <strong>Mechanical backtest</strong> replays a simple
+    fixed rule against real historical results from a completed season, which <em>is</em> honestly computable today.
+    Don't read one as validating the other.
+  </p>
+
+  <section class="picks-list">
+    <h2>Your Picks Performance</h2>
+    <button id="gradeNowBtn">Grade Completed Weeks Now</button>
+    <span id="gradeStatus"></span>
+    <div id="picksPerformanceWrap"></div>
+  </section>
+
+  <section class="picks-list">
+    <h2>Model Calibration</h2>
+    <p class="section-hint">Realized hit rate per confidence bucket, from every leg the model has generated and that has since been graded.</p>
+    <div id="calibrationWrap"></div>
+  </section>
+
+  <section class="picks-list">
+    <h2>Mechanical Backtest</h2>
+    <p class="section-hint">Tests a fixed rule ("bet the over at X% of trailing average") against a completed season's real results &mdash; not this app's model.</p>
+    <form id="backtestForm" class="pick-form">
+      <label>Season <input name="season" type="number" value="2025"></label>
+      <label>Position
+        <select name="position">
+          <option value="">All</option>
+          <option value="QB">QB</option>
+          <option value="RB" selected>RB</option>
+          <option value="WR">WR</option>
+          <option value="TE">TE</option>
+        </select>
+      </label>
+      <label>Stat
+        <select name="stat">
+          <option value="rush_yds" selected>Rushing Yards</option>
+          <option value="rec_yds">Receiving Yards</option>
+          <option value="receptions">Receptions</option>
+          <option value="pass_yds">Passing Yards</option>
+        </select>
+      </label>
+      <label>Direction
+        <select name="direction">
+          <option value="Over" selected>Over</option>
+          <option value="Under">Under</option>
+        </select>
+      </label>
+      <label>Threshold (% of trailing avg) <input name="threshold" type="number" step="0.01" value="0.75"></label>
+      <label>Start week <input name="start_week" type="number" value="4"></label>
+      <label>End week <input name="end_week" type="number" value="17"></label>
+      <button type="submit">Run Backtest</button>
+    </form>
+    <div id="backtestResultWrap"></div>
+  </section>
+
+  <section class="picks-list">
+    <h2>Export</h2>
+    <button id="exportBtn">Download JSON Export</button>
+  </section>
 </div>
 
 <script src="/common.js"></script>
 <script src="/parlays.js"></script>
 <script src="/picks.js"></script>
 <script src="/dashboard.js"></script>
+<script src="/history.js"></script>
 </body>
 </html>

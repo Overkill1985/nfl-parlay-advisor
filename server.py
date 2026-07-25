@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import correlation
 import espn_client
+import history
 import odds_math
 import parlay_engine
 import storage
@@ -454,16 +455,110 @@ class Handler(BaseHTTPRequestHandler):
             "all_legs_have_model_estimate": all(l["used_model"] for l in leg_results),
         }
 
+    # -- routes: history / calibration / backtesting -------------------
+
+    @route("POST", r"^/api/history/grade$")
+    def grade_history_route(self, query):
+        data = espn_client.get_projections(SEASON)
+        current_week = data["current_week"]
+        week = query.get("week", [None])[0]
+        week = int(week) if week else None
+
+        graded_snapshots = 0
+        weeks_to_grade = [week] if week is not None else list(range(1, current_week))
+        for w in weeks_to_grade:
+            graded_snapshots += history.auto_grade_pending_snapshots(data["players"], SEASON, w)
+        graded_picks = history.auto_grade_pending_picks(data["players"], week=week)
+
+        return {"graded_snapshots": graded_snapshots, "graded_picks": graded_picks}
+
+    @route("GET", r"^/api/history/stats$")
+    def get_history_stats(self, query):
+        season = query.get("season", [str(SEASON)])[0]
+        return {
+            "calibration": history.calibration_report(season=int(season)),
+            "picks_performance": history.picks_performance_summary(),
+        }
+
+    @route("GET", r"^/api/history/export$")
+    def get_history_export(self, query):
+        return storage.export_all()
+
+    @route("GET", r"^/api/backtest/mechanical$")
+    def get_backtest_mechanical(self, query):
+        backtest_season = int(query.get("season", [str(SEASON - 1)])[0])
+        stat = query.get("stat", ["rush_yds"])[0]
+        threshold_pct = float(query.get("threshold", ["0.75"])[0])
+        direction = query.get("direction", ["Over"])[0]
+        position = query.get("position", [None])[0]
+        start_week = int(query.get("start_week", ["4"])[0])
+        end_week = int(query.get("end_week", ["17"])[0])
+
+        if stat not in espn_client.STAT_IDS:
+            raise ApiError(f"Unknown stat '{stat}'. Must be one of {sorted(espn_client.STAT_IDS)}")
+        if direction not in ("Over", "Under"):
+            raise ApiError("direction must be 'Over' or 'Under'")
+
+        backtest_data = espn_client.get_projections(backtest_season)
+        result = history.backtest_mechanical(
+            backtest_data["players"], stat, threshold_pct, direction=direction,
+            position=position, start_week=start_week, end_week=end_week,
+        )
+        result["season"] = backtest_season
+        return result
+
+
+def _snapshot_current_week_legs(data, week):
+    """Writes a default sweep of model-generated legs into model_snapshots
+    for calibration tracking - this is what lets us eventually check "did
+    our 60%-confidence legs actually hit ~60% of the time?" (history.py).
+    Uses the default balanced/all-positions view; the snapshot doesn't need
+    to cover every risk tier a user might pick, just a consistent baseline."""
+    legs = parlay_engine.build_legs(data["players"], week, risk="balanced", position_filter="ALL")
+    for leg in legs:
+        storage.upsert_model_snapshot(
+            season=SEASON, week=week,
+            player_id=leg["player_id"], player_name=leg["player"], team=leg["team"],
+            position=leg["position"], stat=leg["stat"], label=leg["label"],
+            direction=leg["direction"], line=leg["line"],
+            model_probability=leg["probability"], projected_avg=leg["projected_avg"],
+            source=leg["source"], risk_tier="balanced",
+        )
+    return len(legs)
+
+
+def _refresh_cycle(force_refresh):
+    data = espn_client.get_projections(SEASON, force_refresh=force_refresh)
+    current_week = data["current_week"]
+    snapshot_count = _snapshot_current_week_legs(data, current_week)
+
+    graded_snapshots = 0
+    for week in range(1, current_week):
+        graded_snapshots += history.auto_grade_pending_snapshots(data["players"], SEASON, week)
+    graded_picks = history.auto_grade_pending_picks(data["players"])
+
+    print(f"Refresh: projections updated, {snapshot_count} legs snapshotted for week "
+          f"{current_week}, {graded_snapshots} snapshots and {graded_picks} picks graded")
+
 
 def _background_refresh_loop():
     """Keeps the projections cache warm on its own, so the app has fresh data
     even if nobody happens to visit right after ESPN publishes a new week's
-    projections. Just a timer loop - no external scheduler needed."""
+    projections. Also snapshots the current week's legs for calibration
+    tracking, and auto-grades any prior weeks' picks/snapshots once actual
+    results exist. Runs once immediately (so calibration data starts
+    accumulating right away) then repeats on a timer - no external
+    scheduler needed."""
+    try:
+        _refresh_cycle(force_refresh=False)
+    except Exception:
+        print("Initial refresh failed:")
+        traceback.print_exc()
+
     while True:
         time.sleep(REFRESH_INTERVAL_SECONDS)
         try:
-            espn_client.get_projections(SEASON, force_refresh=True)
-            print("Background refresh: projections cache updated")
+            _refresh_cycle(force_refresh=True)
         except Exception:
             print("Background refresh failed:")
             traceback.print_exc()

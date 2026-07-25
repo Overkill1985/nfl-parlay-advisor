@@ -16,8 +16,14 @@ import os
 import time
 import urllib.request
 
-CACHE_PATH = os.path.join(os.path.dirname(__file__), "cache", "projections.json")
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
+
+
+def _projections_cache_path(season):
+    # Season-specific filename - backtesting against a past season (see
+    # history.py) must not clobber the live current-season cache.
+    return os.path.join(CACHE_DIR, f"projections_{season}.json")
 GAME_STATE_CACHE_TTL_SECONDS = 60 * 60  # 1 hour - current week rarely changes
 SCHEDULE_CACHE_TTL_SECONDS = 12 * 60 * 60  # 12 hours - matchups rarely change mid-week
 
@@ -317,13 +323,30 @@ def get_recent_form(player, upto_week, n=5):
     }
 
 
+def _normalize_week_keys(players):
+    """JSON has no integer-keyed-dict concept, so every round-trip through
+    the cache file turns weekly_projections/weekly_actuals keys into strings.
+    Every other function here (get_week_stats, get_recent_form, history.py's
+    grading/backtesting) indexes those dicts with an int week number, so
+    without this they'd silently miss on every cache hit - falling back to
+    season-pace estimates and reporting "no games played" even when real
+    data exists. Idempotent: a no-op on already-int keys.
+    """
+    for p in players:
+        for field in ("weekly_projections", "weekly_actuals"):
+            p[field] = {int(k): v for k, v in p.get(field, {}).items()}
+    return players
+
+
 def get_projections(season, force_refresh=False):
-    if not force_refresh and os.path.exists(CACHE_PATH):
-        age = time.time() - os.path.getmtime(CACHE_PATH)
+    cache_path = _projections_cache_path(season)
+    if not force_refresh and os.path.exists(cache_path):
+        age = time.time() - os.path.getmtime(cache_path)
         if age < CACHE_TTL_SECONDS:
-            with open(CACHE_PATH, "r", encoding="utf-8") as f:
+            with open(cache_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
             if cached.get("season") == season:
+                _normalize_week_keys(cached["players"])
                 return cached
 
     data = _fetch_players_from_espn(season)
@@ -342,8 +365,9 @@ def get_projections(season, force_refresh=False):
         "players": players,
     }
 
-    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(result, f)
 
+    _normalize_week_keys(result["players"])
     return result
