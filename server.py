@@ -36,6 +36,29 @@ class ApiError(Exception):
         self.status = status
 
 
+def _query_int(query, key, default=None):
+    """Reads an int query param, raising a 400 ApiError on bad input instead
+    of letting a bare ValueError fall through to _dispatch's generic 502
+    (which reads as "server broke" rather than "you sent a bad request")."""
+    raw = query.get(key, [None])[0]
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ApiError(f"'{key}' must be an integer, got {raw!r}")
+
+
+def _query_float(query, key, default=None):
+    raw = query.get(key, [None])[0]
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ApiError(f"'{key}' must be a number, got {raw!r}")
+
+
 def _team_strength(players):
     """Rough proxy for roster fantasy strength: total projected points/game
     across all rostered skill players on a team. Only used as a last-resort,
@@ -132,6 +155,11 @@ class Handler(BaseHTTPRequestHandler):
             except ApiError as exc:
                 self._send_json({"error": exc.message}, status=exc.status)
             except Exception as exc:
+                # Unlike ApiError, this is an unanticipated failure - print
+                # the traceback server-side (as the background refresh loop
+                # already does) so it's actually debuggable, not just a
+                # generic 502 the client sees with no server-side record.
+                traceback.print_exc()
                 self._send_json({"error": str(exc)}, status=502)
             return True
         return False
@@ -170,12 +198,12 @@ class Handler(BaseHTTPRequestHandler):
     @route("GET", r"^/api/schedule$")
     def get_schedule_route(self, query):
         schedule = espn_client.get_schedule(SEASON)
-        week = query.get("week", [None])[0]
-        if week:
+        week = _query_int(query, "week")
+        if week is not None:
             return {
                 "season": SEASON,
-                "week": int(week),
-                "matchups": schedule["weeks"].get(week, {}),
+                "week": week,
+                "matchups": schedule["weeks"].get(str(week), {}),
                 "bye_weeks": schedule["bye_weeks"],
             }
         return schedule
@@ -184,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
     def get_dashboard(self, query):
         data = espn_client.get_projections(SEASON)
         current_week = data["current_week"]
-        week = int(query.get("week", [current_week])[0])
+        week = _query_int(query, "week", default=current_week)
         week = max(1, min(espn_client.MAX_WEEK, week))
         position = query.get("position", ["ALL"])[0]
         team = query.get("team", [None])[0]
@@ -244,14 +272,14 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):
-        num_legs = int(query.get("legs", ["3"])[0])
+        num_legs = _query_int(query, "legs", default=3)
         risk = query.get("risk", ["balanced"])[0]
         position = query.get("position", ["ALL"])[0]
         num_legs = max(2, min(4, num_legs))
 
         data = espn_client.get_projections(SEASON)
         current_week = data["current_week"]
-        week = int(query.get("week", [current_week])[0])
+        week = _query_int(query, "week", default=current_week)
         week = max(1, min(espn_client.MAX_WEEK, week))
 
         schedule = espn_client.get_schedule(SEASON)
@@ -303,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
                 filters[key] = query[key][0]
         for key in ("season", "week", "parlay_group_id"):
             if key in query:
-                filters[key] = int(query[key][0])
+                filters[key] = _query_int(query, key)
         return {"picks": storage.list_picks(**filters)}
 
     @route("POST", r"^/api/picks$")
@@ -461,8 +489,7 @@ class Handler(BaseHTTPRequestHandler):
     def grade_history_route(self, query):
         data = espn_client.get_projections(SEASON)
         current_week = data["current_week"]
-        week = query.get("week", [None])[0]
-        week = int(week) if week else None
+        week = _query_int(query, "week")
 
         graded_snapshots = 0
         weeks_to_grade = [week] if week is not None else list(range(1, current_week))
@@ -474,9 +501,9 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"^/api/history/stats$")
     def get_history_stats(self, query):
-        season = query.get("season", [str(SEASON)])[0]
+        season = _query_int(query, "season", default=SEASON)
         return {
-            "calibration": history.calibration_report(season=int(season)),
+            "calibration": history.calibration_report(season=season),
             "picks_performance": history.picks_performance_summary(),
         }
 
@@ -486,13 +513,13 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"^/api/backtest/mechanical$")
     def get_backtest_mechanical(self, query):
-        backtest_season = int(query.get("season", [str(SEASON - 1)])[0])
+        backtest_season = _query_int(query, "season", default=SEASON - 1)
         stat = query.get("stat", ["rush_yds"])[0]
-        threshold_pct = float(query.get("threshold", ["0.75"])[0])
+        threshold_pct = _query_float(query, "threshold", default=0.75)
         direction = query.get("direction", ["Over"])[0]
         position = query.get("position", [None])[0]
-        start_week = int(query.get("start_week", ["4"])[0])
-        end_week = int(query.get("end_week", ["17"])[0])
+        start_week = _query_int(query, "start_week", default=4)
+        end_week = _query_int(query, "end_week", default=17)
 
         if stat not in espn_client.STAT_IDS:
             raise ApiError(f"Unknown stat '{stat}'. Must be one of {sorted(espn_client.STAT_IDS)}")

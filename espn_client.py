@@ -16,6 +16,8 @@ import os
 import time
 import urllib.request
 
+from cache_io import atomic_write_json
+
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
 
@@ -119,9 +121,7 @@ def get_current_week(season):
         week = 1  # don't let a game-state hiccup take down the whole projections fetch
     week = max(1, min(MAX_WEEK, week))
 
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump({"season": season, "week": week}, f)
+    atomic_write_json(cache_path, {"season": season, "week": week})
 
     return week
 
@@ -182,9 +182,7 @@ def get_schedule(season, force_refresh=False):
         "weeks": weeks,
     }
 
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(result, f)
+    atomic_write_json(cache_path, result)
 
     return result
 
@@ -365,9 +363,7 @@ def get_projections(season, force_refresh=False):
         "players": players,
     }
 
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(result, f)
+    atomic_write_json(cache_path, result)
 
     _normalize_week_keys(result["players"])
     return result

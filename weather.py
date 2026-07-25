@@ -15,6 +15,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from cache_io import atomic_write_json
+
 CACHE_PATH = os.path.join(os.path.dirname(__file__), "cache", "weather.json")
 CACHE_TTL_SECONDS = 4 * 60 * 60  # 4 hours - forecasts drift, shouldn't go stale slowly
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -74,9 +76,7 @@ def _load_cache():
 
 
 def _save_cache(cache):
-    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(cache, f)
+    atomic_write_json(CACHE_PATH, cache)
 
 
 def _flag_impact(forecast):
