@@ -18,6 +18,7 @@ import espn_client
 import odds_math
 import parlay_engine
 import storage
+import weather
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 SEASON = 2026
@@ -177,6 +178,68 @@ class Handler(BaseHTTPRequestHandler):
                 "bye_weeks": schedule["bye_weeks"],
             }
         return schedule
+
+    @route("GET", r"^/api/dashboard$")
+    def get_dashboard(self, query):
+        data = espn_client.get_projections(SEASON)
+        current_week = data["current_week"]
+        week = int(query.get("week", [current_week])[0])
+        week = max(1, min(espn_client.MAX_WEEK, week))
+        position = query.get("position", ["ALL"])[0]
+        team = query.get("team", [None])[0]
+
+        players = data["players"]
+        if position != "ALL":
+            players = [p for p in players if p["position"] == position]
+        if team:
+            players = [p for p in players if p["team"] == team.upper()]
+
+        injuries = [
+            {
+                "player_id": p["id"], "name": p["name"], "team": p["team"], "position": p["position"],
+                "injury_status": p["injury_status"], "injured": p["injured"],
+            }
+            for p in players if p["injury_status"] not in ("ACTIVE", "UNKNOWN")
+        ]
+
+        recent_form = []
+        for p in players:
+            form = espn_client.get_recent_form(p, week)
+            if form["games_available"] > 0:
+                recent_form.append({
+                    "player_id": p["id"], "name": p["name"], "team": p["team"], "position": p["position"],
+                    **form,
+                })
+        recent_form.sort(key=lambda r: r["avg_points"], reverse=True)
+
+        schedule = espn_client.get_schedule(SEASON)
+        week_map = schedule["weeks"].get(str(week), {})
+        weather_reports = []
+        seen_games = set()
+        for team_abbr, info in week_map.items():
+            if not info["is_home"]:
+                continue
+            game_key = frozenset((team_abbr, info["opponent"]))
+            if game_key in seen_games:
+                continue
+            seen_games.add(game_key)
+            forecast = weather.get_forecast(team_abbr, info["game_date"])
+            weather_reports.append({
+                "home_team": team_abbr, "away_team": info["opponent"], "game_date": info["game_date"],
+                **forecast,
+            })
+
+        return {
+            "season": SEASON,
+            "week": week,
+            "current_week": current_week,
+            "position": position,
+            "team": team,
+            "injuries": injuries,
+            "recent_form": recent_form[:100],
+            "weather": weather_reports,
+            "targets_stat_available": espn_client.TARGETS_STAT_CONFIRMED,
+        }
 
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):

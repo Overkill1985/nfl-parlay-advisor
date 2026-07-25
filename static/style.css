@@ -173,6 +173,11 @@ section#parlays, section.browse {
   color: #fff;
 }
 
+.badge-out {
+  background: #e0654e;
+  color: #fff;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

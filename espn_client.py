@@ -63,6 +63,25 @@ STAT_IDS = {
 FILTER_LIMIT = 400  # top N players by ownership/rank - plenty for QB/RB/WR/TE parlay legs
 MAX_WEEK = 18
 
+# ESPN's injuryStatus strings, normalized to a small fixed set. Anything not
+# listed here passes through as-is rather than being silently dropped, since
+# preseason/early-season coverage can be inconsistent.
+INJURY_STATUS_MAP = {
+    "ACTIVE": "ACTIVE",
+    "PROBABLE": "PROBABLE",
+    "QUESTIONABLE": "QUESTIONABLE",
+    "DOUBTFUL": "DOUBTFUL",
+    "OUT": "OUT",
+    "INJURY_RESERVE": "IR",
+    "SUSPENSION": "SUSPENDED",
+    "DAY_TO_DAY": "QUESTIONABLE",
+}
+
+# Stat 41 looked like it might be receiving targets, but it exactly matches
+# receptions (stat 53) in every player checked - not a distinct field, or at
+# least not reliably one. Left unused rather than reporting a wrong number.
+TARGETS_STAT_CONFIRMED = False
+
 
 def _get(url):
     req = urllib.request.Request(
@@ -139,7 +158,8 @@ def get_schedule(season, force_refresh=False):
             opponent_id = game.get("awayProTeamId") if is_home else game.get("homeProTeamId")
             game_date_ms = game.get("date")
             game_date_iso = (
-                datetime.datetime.utcfromtimestamp(game_date_ms / 1000).isoformat() + "Z"
+                datetime.datetime.fromtimestamp(game_date_ms / 1000, tz=datetime.timezone.utc)
+                    .replace(tzinfo=None).isoformat() + "Z"
                 if game_date_ms else None
             )
             weeks.setdefault(week_str, {})[abbr] = {
@@ -209,14 +229,24 @@ def _extract_player(entry, season):
 
     season_proj = None
     weekly_projections = {}
+    weekly_actuals = {}
     for s in player.get("stats", []):
-        if s.get("seasonId") != season or s.get("statSourceId") != 1:
+        if s.get("seasonId") != season:
             continue
         period = s.get("scoringPeriodId")
-        if period == 0:
-            season_proj = s
-        elif period and 1 <= period <= MAX_WEEK:
-            weekly_projections[period] = {
+        if s.get("statSourceId") == 1:
+            if period == 0:
+                season_proj = s
+            elif period and 1 <= period <= MAX_WEEK:
+                weekly_projections[period] = {
+                    "stats": _stats_dict(s.get("stats", {})),
+                    "applied_total": s.get("appliedTotal", 0.0),
+                }
+        elif s.get("statSourceId") == 0 and period and 1 <= period <= MAX_WEEK:
+            # Real results for weeks already played this season - the input
+            # for trailing-form/usage tracking (Step 4) and grading/backtesting
+            # (Step 5), neither of which existed when this parser was written.
+            weekly_actuals[period] = {
                 "stats": _stats_dict(s.get("stats", {})),
                 "applied_total": s.get("appliedTotal", 0.0),
             }
@@ -235,6 +265,9 @@ def _extract_player(entry, season):
         "stats_season": _stats_dict(season_proj.get("stats", {})),
         "games": 17,
         "weekly_projections": weekly_projections,
+        "weekly_actuals": weekly_actuals,
+        "injury_status": INJURY_STATUS_MAP.get(player.get("injuryStatus"), player.get("injuryStatus") or "UNKNOWN"),
+        "injured": bool(player.get("injured", False)),
     }
 
 
@@ -251,6 +284,37 @@ def get_week_stats(player, week):
 
     per_game_stats = {k: v / player["games"] for k, v in player["stats_season"].items()}
     return per_game_stats, player["projected_points_per_game"], "season_pace_estimate"
+
+
+def get_recent_form(player, upto_week, n=5):
+    """Trailing-N actual game stat lines for `player`, using only games
+    already played this season (weeks strictly before `upto_week`).
+
+    This is the practical stand-in for "usage" - ESPN's free API doesn't
+    expose snap share or red-zone touches, so recent-game trend in the stats
+    we do have (receptions, rush attempts, yardage) is what's available.
+    Returns games_available=0 (not an error) when nothing's been played yet,
+    e.g. before the season starts or in a player's first couple of weeks.
+    """
+    actuals = player.get("weekly_actuals", {})
+    played_weeks = sorted((w for w in actuals if w < upto_week), reverse=True)[:n]
+    games = [actuals[w] for w in played_weeks]
+
+    if not games:
+        return {"games_available": 0, "weeks_used": [], "avg_stats": {}, "avg_points": None}
+
+    avg_stats = {
+        stat_name: round(sum(g["stats"][stat_name] for g in games) / len(games), 1)
+        for stat_name in STAT_IDS
+    }
+    avg_points = round(sum(g["applied_total"] for g in games) / len(games), 1)
+
+    return {
+        "games_available": len(games),
+        "weeks_used": played_weeks,
+        "avg_stats": avg_stats,
+        "avg_points": avg_points,
+    }
 
 
 def get_projections(season, force_refresh=False):

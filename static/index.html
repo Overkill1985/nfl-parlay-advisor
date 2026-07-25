@@ -138,7 +138,43 @@
 </div>
 
 <div id="tab-dashboard" class="tab-panel hidden">
-  <p class="section-hint">Injury, usage, and weather dashboard — coming soon.</p>
+  <p class="section-hint">
+    Usage here means trailing-game trend (receptions, rush attempts, yardage) since ESPN's free data doesn't expose
+    snap share or red-zone touches &mdash; that gap is flagged rather than estimated.
+  </p>
+  <section class="controls">
+    <label>
+      Week
+      <select id="dashWeek"></select>
+    </label>
+    <label>
+      Position
+      <select id="dashPosition">
+        <option value="ALL" selected>All</option>
+        <option value="QB">QB</option>
+        <option value="RB">RB</option>
+        <option value="WR">WR</option>
+        <option value="TE">TE</option>
+      </select>
+    </label>
+    <button id="dashRefresh">Refresh Dashboard</button>
+    <span id="dashStatus"></span>
+  </section>
+
+  <section class="picks-list">
+    <h2>Injury Report</h2>
+    <div id="injuryTableWrap"></div>
+  </section>
+
+  <section class="picks-list">
+    <h2>Recent Form (Usage Trend)</h2>
+    <div id="formTableWrap"></div>
+  </section>
+
+  <section class="picks-list">
+    <h2>Game Weather</h2>
+    <div id="weatherTableWrap"></div>
+  </section>
 </div>
 
 <div id="tab-history" class="tab-panel hidden">
@@ -148,5 +184,6 @@
 <script src="/common.js"></script>
 <script src="/parlays.js"></script>
 <script src="/picks.js"></script>
+<script src="/dashboard.js"></script>
 </body>
 </html>
