@@ -66,6 +66,118 @@ class TestActualTdCount(unittest.TestCase):
         self.assertEqual(history._actual_td_count("rush_yds", "RB", stats), 87.0)
 
 
+class TestGradeMoneyline(unittest.TestCase):
+    def test_win_is_hit(self):
+        self.assertEqual(history._grade_moneyline(picked_won=True, tied=False), history.GRADE_HIT)
+
+    def test_loss_is_miss(self):
+        self.assertEqual(history._grade_moneyline(picked_won=False, tied=False), history.GRADE_MISS)
+
+    def test_tie_is_push_regardless_of_picked_won(self):
+        self.assertEqual(history._grade_moneyline(picked_won=True, tied=True), history.GRADE_PUSH)
+        self.assertEqual(history._grade_moneyline(picked_won=False, tied=True), history.GRADE_PUSH)
+
+
+def _game(team_score, opponent_score, winner, completed=True):
+    return {"team_score": team_score, "opponent_score": opponent_score, "winner": winner, "completed": completed}
+
+
+class TestGradeGameMarketPick(unittest.TestCase):
+    def test_moneyline_win(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        scores = {"KC": _game(27, 20, winner=True)}
+        actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(actual, 7)
+        self.assertEqual(grade, history.GRADE_HIT)
+
+    def test_moneyline_loss(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        scores = {"KC": _game(20, 27, winner=False)}
+        actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(grade, history.GRADE_MISS)
+
+    def test_moneyline_tie_is_push(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        scores = {"KC": _game(20, 20, winner=False)}
+        _actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(grade, history.GRADE_PUSH)
+
+    def test_spread_favorite_covers(self):
+        # KC favored by 3.5 (line_entered=-3.5), wins by 7 -> covers.
+        pick = {"market_type": "spread", "team": "KC", "line_entered": -3.5}
+        scores = {"KC": _game(27, 20, winner=True)}
+        actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(actual, 7)
+        self.assertEqual(grade, history.GRADE_HIT)
+
+    def test_spread_favorite_fails_to_cover(self):
+        # KC favored by 10.5, wins by only 7 -> does not cover.
+        pick = {"market_type": "spread", "team": "KC", "line_entered": -10.5}
+        scores = {"KC": _game(27, 20, winner=True)}
+        _actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(grade, history.GRADE_MISS)
+
+    def test_spread_underdog_covers_on_loss_within_margin(self):
+        # DEN getting +10.5, loses by 7 -> still covers.
+        pick = {"market_type": "spread", "team": "DEN", "line_entered": 10.5}
+        scores = {"DEN": _game(20, 27, winner=False)}
+        _actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(grade, history.GRADE_HIT)
+
+    def test_spread_push(self):
+        pick = {"market_type": "spread", "team": "KC", "line_entered": -7.0}
+        scores = {"KC": _game(27, 20, winner=True)}
+        _actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(grade, history.GRADE_PUSH)
+
+    def test_total_over_hits(self):
+        pick = {"market_type": "total", "team": "KC", "direction": "Over", "line_entered": 44.5}
+        scores = {"KC": _game(27, 20, winner=True)}
+        actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(actual, 47)
+        self.assertEqual(grade, history.GRADE_HIT)
+
+    def test_total_under_hits(self):
+        pick = {"market_type": "total", "team": "KC", "direction": "Under", "line_entered": 50.5}
+        scores = {"KC": _game(27, 20, winner=True)}
+        _actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual(grade, history.GRADE_HIT)
+
+    def test_game_not_completed_is_not_gradeable(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        scores = {"KC": _game(27, 20, winner=True, completed=False)}
+        actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual((actual, grade), (None, None))
+
+    def test_team_not_in_scores_is_not_gradeable(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        actual, grade = history.grade_game_market_pick(pick, {})
+        self.assertEqual((actual, grade), (None, None))
+
+    def test_player_prop_market_type_is_not_gradeable_here(self):
+        pick = {"market_type": "player_prop", "team": "KC"}
+        scores = {"KC": _game(27, 20, winner=True)}
+        actual, grade = history.grade_game_market_pick(pick, scores)
+        self.assertEqual((actual, grade), (None, None))
+
+
+class TestGradePickAgainstActualGameMarkets(unittest.TestCase):
+    """grade_pick_against_actual's dispatch to the moneyline/spread/total
+    path - the pure-grading-logic details are covered above in
+    TestGradeGameMarketPick, this just checks the routing/gating."""
+
+    def test_game_market_without_scores_by_team_is_not_gradeable(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        result = history.grade_pick_against_actual(pick, players_by_id={}, scores_by_team=None)
+        self.assertEqual(result, (None, None))
+
+    def test_game_market_with_scores_by_team_grades(self):
+        pick = {"market_type": "moneyline", "team": "KC"}
+        scores = {"KC": _game(27, 20, winner=True)}
+        actual, grade = history.grade_pick_against_actual(pick, players_by_id={}, scores_by_team=scores)
+        self.assertEqual(grade, history.GRADE_HIT)
+
+
 def _player(player_id, position, weekly_actuals):
     return {"id": player_id, "position": position, "weekly_actuals": weekly_actuals}
 

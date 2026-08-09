@@ -57,14 +57,80 @@ def _actual_td_count(stat_field, position, actual_stats):
     return actual_stats.get(stat_field)
 
 
+def _grade_moneyline(picked_won, tied):
+    """NFL regular-season ties are rare but real; the standard sportsbook
+    convention is a push, not a loss, so that's handled explicitly rather
+    than falling through to a default."""
+    if tied:
+        return GRADE_PUSH
+    return GRADE_HIT if picked_won else GRADE_MISS
+
+
 # ---------------------------------------------------------------------------
 # Grading
 # ---------------------------------------------------------------------------
 
-def grade_pick_against_actual(pick, players_by_id):
-    """Returns (actual_value, grade_result) for a player_prop pick, or
-    (None, None) if it can't be auto-graded (not a player-prop market we
-    track a stat for, or the game hasn't been played yet)."""
+def grade_game_market_pick(pick, scores_by_team):
+    """Returns (actual_value, grade_result) for a moneyline/spread/total
+    pick using real final scores (`scores_by_team`, keyed by team
+    abbreviation - see espn_client.get_scoreboard), or (None, None) if it
+    can't be graded yet (game not played, or the pick's team isn't in the
+    scoreboard data supplied).
+
+    Convention used here (documented, not schema-enforced - storage.py's
+    PICK_FIELDS/PICK_DIRECTIONS already support all three shapes without a
+    migration):
+      - moneyline: `team` = the team backed to win. `direction`/
+        `line_entered` unused.
+      - spread: `team` = the team backed. `line_entered` = the SIGNED
+        spread for that team (e.g. -3.5 = favored by 3.5). `direction`
+        unused.
+      - total: `team` = either team in the game (just identifies which
+        game). `direction` = Over/Under. `line_entered` = the total number.
+    """
+    if pick["market_type"] not in ("moneyline", "spread", "total") or not pick.get("team"):
+        return None, None
+    game = scores_by_team.get(pick["team"])
+    if not game or not game.get("completed"):
+        return None, None
+
+    team_score = game["team_score"]
+    opponent_score = game["opponent_score"]
+    if team_score is None or opponent_score is None:
+        return None, None
+
+    if pick["market_type"] == "moneyline":
+        margin = team_score - opponent_score
+        return margin, _grade_moneyline(game["winner"], team_score == opponent_score)
+
+    if pick["market_type"] == "spread":
+        margin = team_score - opponent_score
+        line = pick.get("line_entered")
+        if line is None:
+            return margin, None
+        # Cover condition is margin + line > 0 <=> margin > -line, which is
+        # exactly what _grade_over_under("Over", -line, margin) checks -
+        # spread grading reduces to the same over/under logic used for
+        # player props and totals, just with a sign flip.
+        return margin, _grade_over_under("Over", -line, margin)
+
+    total = team_score + opponent_score
+    return total, _grade_over_under(pick.get("direction"), pick.get("line_entered"), total)
+
+
+def grade_pick_against_actual(pick, players_by_id, scores_by_team=None):
+    """Returns (actual_value, grade_result) for a pick, or (None, None) if
+    it can't be auto-graded yet. Player props are graded against real
+    per-player weekly stats (`players_by_id`); moneyline/spread/total picks
+    are graded against real final scores (`scores_by_team`) when supplied -
+    without it, game-market picks are simply left ungraded rather than
+    erroring, since wiring up a score feed is optional.
+    """
+    if pick["market_type"] in ("moneyline", "spread", "total"):
+        if scores_by_team is None:
+            return None, None
+        return grade_game_market_pick(pick, scores_by_team)
+
     if pick["market_type"] != "player_prop" or not pick.get("player_id") or not pick.get("stat"):
         return None, None
     player = players_by_id.get(pick["player_id"])
@@ -80,17 +146,22 @@ def grade_pick_against_actual(pick, players_by_id):
     return actual_value, _grade_over_under(pick["direction"], pick["line_entered"], actual_value)
 
 
-def auto_grade_pending_picks(players, week=None):
-    """Grades any "placed" player-prop picks for weeks we now have actual
-    stats for. Idempotent to re-run - already-graded picks have status
-    graded_win/graded_loss/graded_push and won't be re-selected here since
-    we only pull status="placed"."""
+def auto_grade_pending_picks(players, week=None, scores_by_week=None):
+    """Grades any "placed" picks for weeks we now have actual results for.
+    Player props use `players`' weekly_actuals; moneyline/spread/total picks
+    use `scores_by_week` ({week: scores_by_team}, built from
+    espn_client.get_scoreboard per week) when supplied - omitting it grades
+    only player-prop picks, same as before this parameter existed. Idempotent
+    to re-run - already-graded picks have status graded_win/graded_loss/
+    graded_push and won't be re-selected here since we only pull
+    status="placed"."""
     players_by_id = {p["id"]: p for p in players}
     graded = 0
     for pick in storage.list_picks(status="placed"):
         if week is not None and pick.get("week") != week:
             continue
-        actual_value, grade_result = grade_pick_against_actual(pick, players_by_id)
+        scores_by_team = (scores_by_week or {}).get(pick.get("week"))
+        actual_value, grade_result = grade_pick_against_actual(pick, players_by_id, scores_by_team)
         if grade_result is None:
             continue
         storage.update_pick(
