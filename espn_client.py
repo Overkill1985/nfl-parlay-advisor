@@ -1,9 +1,14 @@
-"""Fetches NFL fantasy projections (season-long and per-week) from ESPN's
-public fantasy API.
+"""Fetches NFL data from ESPN's public APIs - two distinct, unauthenticated
+host families:
 
-The endpoints used here are the same ones that power
-https://fantasy.espn.com/football/players/projections - undocumented but
-requiring no authentication for league-default (non-personal-league) data.
+  - `lm-api-reads.fantasy.espn.com` - the fantasy football API, same one
+    that powers https://fantasy.espn.com/football/players/projections.
+    Projections, schedule/matchups, injuries.
+  - `site.api.espn.com` - ESPN's general sports API (scores, not fantasy).
+    Used only for `get_scoreboard` (real final scores, for grading
+    moneyline/spread/total picks in history.py).
+
+Neither requires an API key or login.
 
 Weekly (per-scoringPeriod) projections don't exist in ESPN's data until
 shortly before that week's games (historically a few days out). Before that,
@@ -28,6 +33,7 @@ def _projections_cache_path(season):
     return os.path.join(CACHE_DIR, f"projections_{season}.json")
 GAME_STATE_CACHE_TTL_SECONDS = 60 * 60  # 1 hour - current week rarely changes
 SCHEDULE_CACHE_TTL_SECONDS = 12 * 60 * 60  # 12 hours - matchups rarely change mid-week
+SCOREBOARD_CACHE_TTL_SECONDS = 30 * 60  # 30 min while a week's still in progress
 
 PLAYERS_URL_TMPL = (
     "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
@@ -40,6 +46,10 @@ GAME_STATE_URL_TMPL = (
 SCHEDULE_URL_TMPL = (
     "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
     "?view=proTeamSchedules_wl"
+)
+SCOREBOARD_URL_TMPL = (
+    "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+    "?seasontype=2&week={week}&dates={season}"
 )
 
 PRO_TEAM_ABBR = {
@@ -96,6 +106,16 @@ def _get(url):
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; nfl-parlay-advisor/1.0)"},
     )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _get_no_ua(url):
+    # site.api.espn.com (used only by get_scoreboard) 403s any request that
+    # sets a custom User-Agent header at all - reproducibly, regardless of
+    # what the value is - but allows urllib's own default UA through. Cause
+    # not understood, just worked around: don't set one for this host.
+    req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -185,6 +205,90 @@ def get_schedule(season, force_refresh=False):
     atomic_write_json(cache_path, result)
 
     return result
+
+
+def _scoreboard_cache_path(season, week):
+    return os.path.join(CACHE_DIR, f"scoreboard_{season}_{week}.json")
+
+
+def get_scoreboard(season, week, force_refresh=False):
+    """Real final scores for `week`: {"available": True, "all_completed":
+    bool, "teams": {team_abbr: {opponent, team_score, opponent_score,
+    winner, completed}}} - shaped symmetrically to `get_schedule`'s
+    per-team-per-week structure. From `site.api.espn.com`, a different,
+    unauthenticated ESPN API family (general sports scores, not fantasy)
+    than everything else in this module.
+
+    This is what makes moneyline/spread/total auto-grading possible in
+    history.py, which previously could only grade player-prop picks.
+
+    A completed game's result can't change, so once a week is fully
+    completed its cache is treated as permanently valid - only an
+    in-progress/upcoming week's cache expires on the normal short TTL.
+    Returns {"available": False, "reason": ...} on fetch failure rather
+    than raising, since a scoreboard hiccup shouldn't take down grading or
+    the background refresh loop.
+    """
+    cache_path = _scoreboard_cache_path(season, week)
+    if not force_refresh and os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if cached.get("season") == season and cached.get("week") == week:
+            if cached.get("all_completed"):
+                return cached
+            age = time.time() - os.path.getmtime(cache_path)
+            if age < SCOREBOARD_CACHE_TTL_SECONDS:
+                return cached
+
+    try:
+        data = _get_no_ua(SCOREBOARD_URL_TMPL.format(season=season, week=week))
+    except Exception as exc:
+        return {"available": False, "season": season, "week": week, "reason": f"fetch_error: {exc}"}
+
+    events = data.get("events", [])
+    teams = {}
+    all_completed = bool(events)
+    for event in events:
+        completed = bool(event.get("status", {}).get("type", {}).get("completed"))
+        if not completed:
+            all_completed = False
+
+        competitors = event.get("competitions", [{}])[0].get("competitors", [])
+        if len(competitors) != 2:
+            continue
+        for i, comp in enumerate(competitors):
+            other = competitors[1 - i]
+            abbr = comp.get("team", {}).get("abbreviation")
+            other_abbr = other.get("team", {}).get("abbreviation")
+            if not abbr or not other_abbr:
+                continue
+            teams[abbr] = {
+                "opponent": other_abbr,
+                "team_score": _int_or_none(comp.get("score")),
+                "opponent_score": _int_or_none(other.get("score")),
+                "winner": bool(comp.get("winner")),
+                "completed": completed,
+            }
+
+    result = {
+        "available": True,
+        "season": season,
+        "week": week,
+        "fetched_at": time.time(),
+        "all_completed": all_completed,
+        "teams": teams,
+    }
+    atomic_write_json(cache_path, result)
+    return result
+
+
+def _int_or_none(raw):
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _fetch_players_from_espn(season):
