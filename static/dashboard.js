@@ -41,12 +41,21 @@ function renderInjuries(injuries) {
   `;
 }
 
-function renderForm(recentForm) {
+function fmtUsagePct(value) {
+  return value != null ? `${(value * 100).toFixed(0)}%` : "—";
+}
+
+function renderForm(recentForm, usageAvailable, usageReason) {
   if (!recentForm.length) {
     formTableWrap.innerHTML = "<p>No games played yet this season for these players — check back once Week 1 is underway.</p>";
     return;
   }
-  const rows = recentForm.map(p => `
+  const usageNote = !usageAvailable
+    ? `<p class="section-hint">Real usage data (snap %, target share, WOPR) from nflverse isn't available yet${usageReason ? ` (${escapeHtml(usageReason)})` : ""} — showing trailing-stat trend only.</p>`
+    : "";
+  const rows = recentForm.map(p => {
+    const usage = p.nflverse_usage;
+    return `
     <tr>
       <td>${escapeHtml(p.name)}</td>
       <td>${escapeHtml(p.team)}</td>
@@ -57,14 +66,20 @@ function renderForm(recentForm) {
       <td>${p.avg_stats.rush_yds}</td>
       <td>${p.avg_stats.receptions}</td>
       <td>${p.avg_stats.rec_yds}</td>
+      <td title="Real per-game snap share from nflverse">${usage ? fmtUsagePct(usage.offense_pct) : "—"}</td>
+      <td title="Real per-game target share from nflverse">${usage ? fmtUsagePct(usage.target_share) : "—"}</td>
+      <td title="Weighted Opportunity Rating (target share + air yards share) from nflverse">${usage && usage.wopr != null ? usage.wopr.toFixed(2) : "—"}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
   formTableWrap.innerHTML = `
+    ${usageNote}
     <table>
       <thead>
         <tr>
           <th>Player</th><th>Team</th><th>Pos</th><th>Games</th><th>Avg Pts</th>
           <th>Rush Att</th><th>Rush Yds</th><th>Rec</th><th>Rec Yds</th>
+          <th>Snap %</th><th>Tgt Share</th><th>WOPR</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -114,7 +129,7 @@ async function loadDashboard() {
     const data = await apiGet(`/api/dashboard?${weekParam}position=${position}`);
     populateDashWeekSelect(data.current_week);
     renderInjuries(data.injuries);
-    renderForm(data.recent_form);
+    renderForm(data.recent_form, data.nflverse_usage_available, data.nflverse_usage_reason);
     renderWeather(data.weather);
     dashStatus.textContent = `Week ${data.week} · ${data.injuries.length} injury note(s) · ${data.weather.length} game(s)`;
   } catch (err) {

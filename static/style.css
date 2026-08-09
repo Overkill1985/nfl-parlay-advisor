@@ -266,6 +266,11 @@ th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background
   gap: 0.3rem;
 }
 
+.pick-form label[title] {
+  cursor: help;
+  border-bottom: 1px dotted var(--muted);
+}
+
 .pick-form button {
   height: fit-content;
   align-self: end;
