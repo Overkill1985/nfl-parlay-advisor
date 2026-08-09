@@ -149,3 +149,65 @@ tests/             unittest suite - pure-function tests, no network
 cache/             Cached ESPN/nflverse/odds/weather responses (gitignored, created at runtime)
 data/              sqlite db + migration backups (gitignored, created at runtime)
 ```
+
+## CI/CD & Security Scanning
+
+### GitHub Actions Workflow
+
+Every push to `main` or `develop`, and every pull request, automatically:
+
+1. **Builds** the Docker image
+2. **Scans** with Docker Scout for vulnerabilities
+3. **Blocks** the build if critical vulnerabilities are detected
+4. **Comments** on pull requests with scan results
+5. **Uploads** SARIF report to GitHub Security tab
+6. **Pushes** to Docker Hub (on merge to `main` only)
+
+### Setup
+
+1. **Add GitHub Secrets** (Settings → Secrets and variables → Actions):
+   ```
+   DOCKER_USERNAME = your-docker-hub-username
+   DOCKER_PASSWORD = your-docker-personal-access-token
+   ```
+
+2. **Trigger the workflow** by pushing to `main` or opening a pull request:
+   ```bash
+   git push origin main
+   ```
+
+3. **View results**:
+   - GitHub Actions tab: full build logs and scan output
+   - GitHub Security tab (Code scanning alerts): vulnerability details
+   - Pull request comments: markdown-formatted scan summary
+
+### Scanning Locally
+
+Before pushing, scan your local image:
+
+```bash
+# Build image
+docker build -t nfl-parlay-advisor:local .
+
+# Scan with Docker Scout
+docker scout cves nfl-parlay-advisor:local
+
+# View fixable vulnerabilities only
+docker scout cves --only-fixed nfl-parlay-advisor:local
+```
+
+### Vulnerability Gate
+
+The workflow fails if **critical** vulnerabilities are detected. To adjust the threshold, edit `.github/workflows/docker-build-scan.yml`:
+
+```yaml
+- name: Check for critical vulnerabilities
+  run: |
+    docker scout cves --format json ${{ env.IMAGE }}:${{ env.TAG }} | \
+    jq -e '.summary.critical == 0' || exit 1
+```
+
+Change to also fail on high-severity:
+```yaml
+jq -e '(.summary.critical + .summary.high) == 0' || exit 1
+```
