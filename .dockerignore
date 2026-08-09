@@ -13,3 +13,4 @@ docker-compose.yml
 cache/*.json
 data/*.db
 data/backups
+.env

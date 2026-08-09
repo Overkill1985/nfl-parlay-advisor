@@ -41,7 +41,7 @@ window.trackLeg = trackLeg;
 
 function renderParlays(data) {
   if (data.error) {
-    parlaysEl.innerHTML = `<p style="color:#e0654e">Error: ${data.error}</p>`;
+    parlaysEl.innerHTML = `<p style="color:#e0654e">Error: ${escapeHtml(data.error)}</p>`;
     return;
   }
   if (!data.parlays.length) {
@@ -162,7 +162,7 @@ async function loadProjections(refresh = false) {
   const data = await res.json();
   if (data.error) {
     statusEl.textContent = "";
-    playerTableWrap.innerHTML = `<p style="color:#e0654e">Error: ${data.error}</p>`;
+    playerTableWrap.innerHTML = `<p style="color:#e0654e">Error: ${escapeHtml(data.error)}</p>`;
     return;
   }
   allPlayers = data.players;

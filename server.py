@@ -33,6 +33,18 @@ PORT = int(os.environ.get("PORT", 8787))
 HOST = os.environ.get("HOST", "127.0.0.1")
 REFRESH_INTERVAL_SECONDS = espn_client.CACHE_TTL_SECONDS  # keep the cache from ever going stale
 
+# Hostnames a request's Host/Origin header must match to be served - see
+# Handler._request_origin_allowed. HOST itself is deliberately excluded: in
+# Docker it's "0.0.0.0" (a bind address, never a real Host header value),
+# and the loopback names below are what clients actually connect through
+# regardless of HOST, matching this app's documented loopback-only design.
+ALLOWED_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
+
+# Caps a JSON request body (picks/parlay-group payloads are tiny) so a
+# forged huge Content-Length can't force the server to buffer unbounded
+# memory before json.loads even runs.
+MAX_BODY_BYTES = 1_000_000
+
 
 class ApiError(Exception):
     """Raise from a route handler to send a specific HTTP status + message,
@@ -161,9 +173,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json_body(self):
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            raise ApiError("Invalid Content-Length header", status=400)
         if length == 0:
             return {}
+        if length > MAX_BODY_BYTES:
+            raise ApiError(f"Request body too large (max {MAX_BODY_BYTES} bytes)", status=413)
         raw = self.rfile.read(length)
         try:
             return json.loads(raw.decode("utf-8"))
@@ -172,9 +189,36 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- dispatch -------------------------------------------------------
 
+    def _request_origin_allowed(self):
+        """Blocks cross-origin browser requests (CSRF) and DNS-rebinding
+        attempts against this unauthenticated, loopback-only server. Checks
+        two independent things: the Host header itself must be a loopback
+        name (so a rebound DNS name pointing at 127.0.0.1 is still rejected,
+        since only the IP - not the hostname the browser used - changes in
+        that attack), and, when a browser sends an Origin header (any
+        cross-origin fetch/XHR does), it must match the same allowlist too.
+        Non-browser clients (curl, this app's own healthcheck) send no
+        Origin and are unaffected."""
+        host_header = self.headers.get("Host", "")
+        hostname = host_header.rsplit(":", 1)[0] if ":" in host_header else host_header
+        if hostname not in ALLOWED_HOSTNAMES:
+            return False
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        try:
+            origin_hostname = urllib.parse.urlparse(origin).hostname
+        except ValueError:
+            return False
+        return origin_hostname in ALLOWED_HOSTNAMES
+
     def _dispatch(self, method):
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+
+        if not self._request_origin_allowed():
+            self._send_json({"error": "Origin not allowed"}, status=403)
+            return True
 
         for route_method, pattern, handler_name in ROUTES:
             if route_method != method:
