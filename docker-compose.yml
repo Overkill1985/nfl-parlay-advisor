@@ -9,4 +9,9 @@ services:
     volumes:
       - ./cache:/app/cache
       - ./data:/app/data
+    environment:
+      # Optional - enables real market odds (odds_client.py). The app runs
+      # fine without it; the ":-" default keeps `docker compose up` from
+      # failing if ODDS_API_KEY isn't set in your shell/.env at all.
+      - ODDS_API_KEY=${ODDS_API_KEY:-}
     restart: unless-stopped

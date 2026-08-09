@@ -3,8 +3,9 @@
 A local, single-user web app for building and evaluating NFL prop parlays: it turns
 ESPN's fantasy projections into model-scored parlay suggestions, lets you track real
 sportsbook odds against those (or your own) picks, flags correlated/conflicting legs,
-surfaces injury/usage/weather risk, and records outcomes for backtesting and model
-calibration.
+surfaces real injury/usage/weather risk, and records outcomes for backtesting and model
+calibration. Beyond ESPN's fantasy API, it also pulls real snap%/target-share usage
+from nflverse, real final scores for grading, and (optionally) real market odds.
 
 > **Informational only, not gambling advice.** Probabilities are statistical estimates
 > from an assumed variance model, not real sportsbook odds. Entering your own
@@ -14,12 +15,25 @@ calibration.
 ## How it works
 
 - **Data source**: [`espn_client.py`](espn_client.py) pulls player projections,
-  weekly matchups/schedule, and injury status directly from ESPN's public fantasy
-  football API (the same one behind
-  [fantasy.espn.com/football/players/projections](https://fantasy.espn.com/football/players/projections)).
-  No API key or login required. Responses are cached to `cache/*.json` (season-specific
-  filenames, so a backtest against a past season never clobbers the live cache) and
-  refreshed automatically by a background thread in `server.py`.
+  weekly matchups/schedule, and injury status from ESPN's public fantasy football API
+  (the same one behind
+  [fantasy.espn.com/football/players/projections](https://fantasy.espn.com/football/players/projections)),
+  plus real final scores from a second, separate ESPN API (general sports scores, not
+  fantasy). No API key or login required for either. Responses are cached to
+  `cache/*.json` (season-specific filenames, so a backtest against a past season never
+  clobbers the live cache) and refreshed automatically by a background thread in
+  `server.py`.
+- **Real usage data** ([`nflverse_client.py`](nflverse_client.py)): real snap %, target
+  share, air yards share, and WOPR from [nflverse](https://github.com/nflverse/nflverse-data)'s
+  public CSVs - no API key, no pip dependency (plain CSV parsing, not the `nfl_data_py`
+  package). Joins to ESPN's player records through exact ids, not name matching. Note
+  that nflverse typically publishes a season's data a bit behind real time, independent
+  of where the season actually is - "not available yet" for the current season is
+  expected, not a bug.
+- **Real market odds** ([`odds_client.py`](odds_client.py), optional): real consensus
+  moneylines/spreads/totals from [The Odds API](https://the-odds-api.com/) (free tier,
+  requires your own API key via the `ODDS_API_KEY` env var - see "Running it" below).
+  Without a key, this simply doesn't run; nothing else in the app depends on it.
 - **Weekly vs. season-pace**: ESPN doesn't publish real per-week projections until a
   few days before that week's games. Until then, legs fall back to *season projection ÷
   17* as a per-game estimate (with wider assumed variance). Every leg is tagged with
@@ -36,7 +50,8 @@ calibration.
   same-team QB+pass-catcher stacks, competing same-team TD props, a favorite's
   moneyline supporting their own rushing prop, a game total taken Under conflicting
   with passing props, and "too many legs in one game" concentration risk - plus a
-  plain-English game-script summary per game.
+  plain-English game-script summary per game, preferring a manually-tracked pick, then
+  real auto market odds, then a clearly-labeled roster-strength guess, in that order.
 - **Weather** ([`weather.py`](weather.py)): a static 32-team stadium/roof reference
   table plus live forecasts from Open-Meteo (free, no API key) for outdoor stadiums.
   Dome/retractable-roof games never hit the network. Forecasts more than ~16 days out
@@ -45,7 +60,8 @@ calibration.
   gitignored) holding your tracked picks, parlay groups, and the model's own
   leg-generation history (for calibration tracking) - separate from the ESPN response
   cache.
-- **History & backtesting** ([`history.py`](history.py)): auto-grades placed picks and
+- **History & backtesting** ([`history.py`](history.py)): auto-grades placed picks
+  (player props, and now moneyline/spread/total too, against real final scores) and
   model snapshots once real results exist, computes ROI/win-rate breakdowns, and runs
   two *different* kinds of validation - a **mechanical backtest** of a fixed rule
   against a completed season's real results (works today), and **model calibration**
@@ -64,6 +80,9 @@ python server.py
 ```
 
 Then open **http://localhost:8787**.
+
+Optional: set `ODDS_API_KEY` (a free key from [the-odds-api.com](https://the-odds-api.com/))
+to enable real market odds. Everything else works with zero configuration.
 
 ### Running in Docker
 
@@ -97,9 +116,9 @@ mapping, not the app.
   score, and the same correlation/game-script checks.
 
 **Dashboard tab** - injury/usage/weather:
-- Injury report (ESPN's designations), trailing-5-game usage trend (the practical
-  stand-in for snap%/red-zone touches, which aren't available from any free data
-  source), and per-game weather with prop-impact flags.
+- Injury report (ESPN's designations), trailing-5-game stat trend plus real snap %/
+  target share/WOPR from nflverse when available for that player/week, and per-game
+  weather with prop-impact flags.
 
 **History tab**:
 - **Your Picks Performance**: ROI and win rate by leg count, market type, direction,
@@ -114,15 +133,19 @@ mapping, not the app.
 ## Project structure
 
 ```
-espn_client.py     ESPN API client (projections, schedule, injuries, weekly actuals)
+espn_client.py     ESPN API client (projections, schedule, injuries, scores)
+nflverse_client.py Real usage data (snap %, target share, WOPR) from nflverse CSVs
+odds_client.py     Real market odds (moneyline/spread/total) from The Odds API
 parlay_engine.py   Prop-leg generation, probability model, parlay combination logic
 odds_math.py       Odds conversions, payout, expected value, risk score
 correlation.py     Correlation warnings + game-script summaries
 weather.py         Stadium reference table + Open-Meteo forecasts
+cache_io.py        Atomic (temp-file + rename) JSON cache writes, shared by the clients above
 storage.py         sqlite storage for picks, parlay groups, model snapshots
 history.py         Grading, calibration reporting, mechanical backtesting
 server.py          Local HTTP server (regex router + all JSON endpoints)
 static/            Frontend - common.js, parlays.js, picks.js, dashboard.js, history.js
-cache/             Cached ESPN/weather responses (gitignored, created at runtime)
+tests/             unittest suite - pure-function tests, no network
+cache/             Cached ESPN/nflverse/odds/weather responses (gitignored, created at runtime)
 data/              sqlite db + migration backups (gitignored, created at runtime)
 ```
