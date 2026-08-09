@@ -163,17 +163,31 @@ def analyze_correlations(legs):
     return warnings
 
 
-def generate_game_script_summary(legs, team_strength=None):
-    """One entry per distinct real-world game represented in `legs`. Prefers a
-    concrete read from market context (moneyline/spread/total legs in the same
-    set); falls back to a clearly-labeled speculative note from relative
-    roster strength (`team_strength`: {team_abbr: avg_projected_points}), or a
-    neutral "unknown" note if neither is available."""
+def generate_game_script_summary(legs, team_strength=None, market_odds_by_game=None):
+    """One entry per distinct real-world game represented in `legs`. Priority
+    order: (a) a manually-tracked moneyline/spread/total pick for that game -
+    the user's own real bet, most specific; (b) automatic real market odds
+    from `market_odds_by_game` (odds_client.get_odds()'s "games" dict,
+    {frozenset({team_a, team_b}): {favorite, spread, total}}) when no manual
+    pick exists; (c) a clearly-labeled speculative note from relative roster
+    strength (`team_strength`: {team_abbr: avg_projected_points}); (d) a
+    neutral "unknown" note if nothing is available.
+
+    This function only ever produces narrative text - it never feeds EV or
+    grading math (those use a pick's own odds_american directly). So when a
+    manual pick and auto market odds exist and disagree on the favorite, we
+    don't try to reconcile them into one number: the manual pick's sentence
+    stays primary (it's the user's real, already-placed bet) with a short
+    caveat appended, surfacing that the market has since moved rather than
+    silently masking the drift.
+    """
     games = {}
     for leg in legs:
         key = _game_key(leg)
         if key and len(key) == 2:
             games.setdefault(key, []).append(leg)
+
+    market_odds_by_game = market_odds_by_game or {}
 
     summaries = []
     for key, game_legs in games.items():
@@ -186,13 +200,26 @@ def generate_game_script_summary(legs, team_strength=None):
         )
         total_pick = next((l for l in game_legs if l.get("market_type") == "total"), None)
         game_label = f"{teams[0]} vs {teams[1]}"
+        auto_market = market_odds_by_game.get(key)
 
         if favored_pick:
             sentence = f"{favored_pick['team']} are the favorite in this game (per your entered odds)"
             if total_pick and total_pick.get("line_entered") is not None:
                 sentence += f", with the total at {total_pick['direction']} {total_pick['line_entered']}"
             sentence += f" - this parlay leans on {favored_pick['team']} controlling {game_label}."
-            summaries.append({"game": game_label, "summary": sentence, "basis": "market"})
+            if auto_market and auto_market.get("favorite") and auto_market["favorite"] != favored_pick["team"]:
+                sentence += (
+                    f" Note: the market now favors {auto_market['favorite']} instead - "
+                    "your line may have moved since you entered it."
+                )
+            summaries.append({"game": game_label, "summary": sentence, "basis": "market_manual"})
+        elif auto_market and auto_market.get("favorite"):
+            sentence = f"{auto_market['favorite']} are the market favorite in this game"
+            total_info = auto_market.get("total")
+            if total_info and total_info.get("point") is not None:
+                sentence += f", with the total set around {total_info['point']}"
+            sentence += f" - this parlay leans on {auto_market['favorite']} controlling {game_label}."
+            summaries.append({"game": game_label, "summary": sentence, "basis": "market_auto"})
         elif team_strength and all(t in team_strength for t in teams):
             stronger = max(teams, key=lambda t: team_strength[t])
             summaries.append({
