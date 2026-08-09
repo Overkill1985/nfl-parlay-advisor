@@ -59,7 +59,26 @@ def _prob_anytime_td(lambda_per_game):
     return 1 - math.exp(-lambda_per_game)
 
 
-def build_legs(players, week, risk="balanced", position_filter="ALL"):
+def _usage_fields(player_usage):
+    """Picks out just the display-relevant nflverse fields, omitted entirely
+    (not zeroed) when there's no usage record for this player/week - see
+    build_legs' docstring."""
+    if not player_usage:
+        return {}
+    fields = {}
+    for key in ("target_share", "offense_pct", "wopr"):
+        if player_usage.get(key) is not None:
+            fields[key] = round(player_usage[key], 3)
+    return fields
+
+
+def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None):
+    """`usage` is optional: nflverse_client.get_usage(season)["players"]
+    ({espn_id: {week: {target_share, offense_pct, wopr, ...}}}). When
+    supplied, matching legs get target_share/offense_pct/wopr attached as
+    display/rationale metadata only - they don't affect the probability
+    model in this pass. Omitted entirely (not zeroed) when unavailable for
+    a given player/week, so the frontend can tell "no data" from "0%"."""
     tier_factor = RISK_TIERS.get(risk, RISK_TIERS["balanced"])
     legs = []
 
@@ -69,6 +88,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
 
         per_game, _, source = espn_client.get_week_stats(p, week)
         cv_multiplier = WEEKLY_PROJECTION_CV_MULTIPLIER if source == "weekly_projection" else 1.0
+        player_usage = (usage or {}).get(p["id"], {}).get(week)
 
         for field, label, unit, positions, cv in YARDAGE_PROPS:
             if p["position"] not in positions:
@@ -97,6 +117,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
                 "probability": round(prob, 3),
                 "source": source,
                 "week": week,
+                **_usage_fields(player_usage),
             })
 
         # Anytime TD (rush + rec TDs combined for skill positions, pass TD for QB)
@@ -123,6 +144,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
                     "probability": round(prob, 3),
                     "source": source,
                     "week": week,
+                    **_usage_fields(player_usage),
                 })
 
     # Round-robin merge by stat category so a flat top-N slice still spans
@@ -149,7 +171,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL"):
 
 
 def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinct_categories=True,
-                   schedule=None, team_strength=None):
+                   schedule=None, team_strength=None, market_odds_by_game=None):
     pool = legs[:candidate_pool]
     best = []
 
@@ -181,7 +203,7 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
             "estimated_decimal_odds": decimal_odds,
             "estimated_american_odds": american_odds,
             "correlation_warnings": correlation.analyze_correlations(normalized),
-            "game_script": correlation.generate_game_script_summary(normalized, team_strength),
+            "game_script": correlation.generate_game_script_summary(normalized, team_strength, market_odds_by_game),
             "risk_score": odds_math.risk_score([leg["probability"] for leg in combo]),
         })
 
@@ -192,6 +214,7 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
         # categories than num_legs (e.g. QB-only has 3 categories max).
         # Fall back to allowing repeated categories rather than showing nothing.
         return build_parlays(legs, num_legs, candidate_pool, top_n, require_distinct_categories=False,
-                              schedule=schedule, team_strength=team_strength)
+                              schedule=schedule, team_strength=team_strength,
+                              market_odds_by_game=market_odds_by_game)
 
     return best[:top_n]

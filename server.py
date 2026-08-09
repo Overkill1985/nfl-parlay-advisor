@@ -16,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import correlation
 import espn_client
 import history
+import nflverse_client
+import odds_client
 import odds_math
 import parlay_engine
 import storage
@@ -73,6 +75,32 @@ def _team_strength(players):
     for p in players:
         strength[p["team"]] = strength.get(p["team"], 0.0) + p["projected_points_per_game"]
     return strength
+
+
+def _market_odds_by_game():
+    """Real market odds for game-script summaries, read from cache only -
+    never force_refresh here (see odds_client's module docstring: only the
+    background refresh loop should trigger a live fetch). Returns {} (not
+    an error) when the integration isn't configured/available, so callers
+    can pass this straight into correlation.py without a None-check."""
+    odds = odds_client.get_odds(force_refresh=False)
+    return odds.get("games", {}) if odds.get("available") else {}
+
+
+def _fetch_scores_for_weeks(weeks):
+    """{week: scores_by_team} for whichever of `weeks` ESPN's scoreboard has
+    data for - skips (rather than raises past) any week that fails to fetch,
+    so one bad week never blocks grading the others."""
+    scores_by_week = {}
+    for week in weeks:
+        try:
+            sb = espn_client.get_scoreboard(SEASON, week)
+        except Exception:
+            traceback.print_exc()
+            continue
+        if sb.get("available"):
+            scores_by_week[week] = sb["teams"]
+    return scores_by_week
 
 
 def _describe_pick(pick):
@@ -242,6 +270,9 @@ class Handler(BaseHTTPRequestHandler):
             for p in players if p["injury_status"] not in ("ACTIVE", "UNKNOWN")
         ]
 
+        usage_result = nflverse_client.get_usage(SEASON)
+        usage_by_player = usage_result.get("players", {}) if usage_result.get("available") else {}
+
         recent_form = []
         for p in players:
             form = espn_client.get_recent_form(p, week)
@@ -249,6 +280,9 @@ class Handler(BaseHTTPRequestHandler):
                 recent_form.append({
                     "player_id": p["id"], "name": p["name"], "team": p["team"], "position": p["position"],
                     **form,
+                    # None (not an error) when nflverse has no record for this
+                    # player/week - see nflverse_client.get_usage's docstring.
+                    "nflverse_usage": usage_by_player.get(p["id"], {}).get(week),
                 })
         recent_form.sort(key=lambda r: r["avg_points"], reverse=True)
 
@@ -279,7 +313,14 @@ class Handler(BaseHTTPRequestHandler):
             "recent_form": recent_form[:100],
             "weather": weather_reports,
             "targets_stat_available": espn_client.TARGETS_STAT_CONFIRMED,
+            "nflverse_usage_available": usage_result.get("available", False),
+            "nflverse_usage_reason": usage_result.get("reason"),
         }
+
+    @route("GET", r"^/api/usage$")
+    def get_usage_route(self, query):
+        season = _query_int(query, "season", default=SEASON)
+        return nflverse_client.get_usage(season)
 
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):
@@ -295,9 +336,14 @@ class Handler(BaseHTTPRequestHandler):
 
         schedule = espn_client.get_schedule(SEASON)
         team_strength = _team_strength(data["players"])
+        usage_result = nflverse_client.get_usage(SEASON)
+        usage_by_player = usage_result.get("players", {}) if usage_result.get("available") else {}
 
-        legs = parlay_engine.build_legs(data["players"], week, risk=risk, position_filter=position)
-        parlays = parlay_engine.build_parlays(legs, num_legs=num_legs, schedule=schedule, team_strength=team_strength)
+        legs = parlay_engine.build_legs(data["players"], week, risk=risk, position_filter=position, usage=usage_by_player)
+        parlays = parlay_engine.build_parlays(
+            legs, num_legs=num_legs, schedule=schedule, team_strength=team_strength,
+            market_odds_by_game=_market_odds_by_game(),
+        )
         weekly_leg_count = sum(1 for l in legs if l["source"] == "weekly_projection")
         return {
             "season": SEASON,
@@ -479,7 +525,9 @@ class Handler(BaseHTTPRequestHandler):
             "group_id": group["id"],
             "legs": leg_results,
             "correlation_warnings": correlation.analyze_correlations(normalized),
-            "game_script": correlation.generate_game_script_summary(normalized, team_strength),
+            "game_script": correlation.generate_game_script_summary(
+                normalized, team_strength, _market_odds_by_game()
+            ),
             "excluded_legs": excluded,
             "num_legs": len(leg_results),
             "stake": stake,
@@ -504,11 +552,13 @@ class Handler(BaseHTTPRequestHandler):
         current_week = data["current_week"]
         week = _query_int(query, "week")
 
-        graded_snapshots = 0
         weeks_to_grade = [week] if week is not None else list(range(1, current_week))
+        graded_snapshots = 0
         for w in weeks_to_grade:
             graded_snapshots += history.auto_grade_pending_snapshots(data["players"], SEASON, w)
-        graded_picks = history.auto_grade_pending_picks(data["players"], week=week)
+
+        scores_by_week = _fetch_scores_for_weeks(weeks_to_grade)
+        graded_picks = history.auto_grade_pending_picks(data["players"], week=week, scores_by_week=scores_by_week)
 
         return {"graded_snapshots": graded_snapshots, "graded_picks": graded_picks}
 
@@ -575,10 +625,32 @@ def _refresh_cycle(force_refresh):
     graded_snapshots = 0
     for week in range(1, current_week):
         graded_snapshots += history.auto_grade_pending_snapshots(data["players"], SEASON, week)
-    graded_picks = history.auto_grade_pending_picks(data["players"])
+
+    scores_by_week = _fetch_scores_for_weeks(range(1, current_week))
+    graded_picks = history.auto_grade_pending_picks(data["players"], scores_by_week=scores_by_week)
+
+    # nflverse/odds are both optional, best-effort integrations - a season
+    # nflverse hasn't published yet or a missing ODDS_API_KEY must never
+    # block the projections refresh or picks grading above, so each gets
+    # its own try/except rather than sharing this function's outer one
+    # (which _background_refresh_loop already wraps for the same reason).
+    usage_status = "error"
+    try:
+        usage = nflverse_client.get_usage(SEASON, force_refresh=force_refresh)
+        usage_status = "available" if usage.get("available") else f"unavailable ({usage.get('reason')})"
+    except Exception:
+        traceback.print_exc()
+
+    odds_status = "error"
+    try:
+        odds = odds_client.get_odds(force_refresh=force_refresh)
+        odds_status = "available" if odds.get("available") else f"unavailable ({odds.get('reason')})"
+    except Exception:
+        traceback.print_exc()
 
     print(f"Refresh: projections updated, {snapshot_count} legs snapshotted for week "
-          f"{current_week}, {graded_snapshots} snapshots and {graded_picks} picks graded")
+          f"{current_week}, {graded_snapshots} snapshots and {graded_picks} picks graded, "
+          f"nflverse usage: {usage_status}, market odds: {odds_status}")
 
 
 def _background_refresh_loop():
