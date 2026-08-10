@@ -4,3 +4,5 @@ cache/*.json
 data/*.db
 data/backups/
 .env
+.claude/
+_bmad/
