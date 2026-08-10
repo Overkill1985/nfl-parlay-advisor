@@ -157,19 +157,25 @@ data/              sqlite db + migration backups (gitignored, created at runtime
 Every push to `main` or `develop`, and every pull request, automatically:
 
 1. **Builds** the Docker image
-2. **Scans** with Docker Scout for vulnerabilities
-3. **Blocks** the build if critical vulnerabilities are detected
+2. **Scans** with [Trivy](https://github.com/aquasecurity/trivy) for vulnerabilities
+3. **Blocks** the build if critical, fixable vulnerabilities are detected
 4. **Comments** on pull requests with scan results
 5. **Uploads** SARIF report to GitHub Security tab
 6. **Pushes** to Docker Hub (on merge to `main` only)
 
-### Setup
+Steps 1-5 need **no credentials at all** - Trivy requires no account, so build and scan
+work on a fresh clone with nothing configured. (This is why the scanner is Trivy rather
+than Docker Scout: Scout requires Docker Hub authentication for every command, so it
+can't scan at all without secrets.) Only step 6, publishing the image, needs secrets.
+
+### Setup (optional - only needed to publish images)
 
 1. **Add GitHub Secrets** (Settings → Secrets and variables → Actions):
    ```
    DOCKER_USERNAME = your-docker-hub-username
    DOCKER_PASSWORD = your-docker-personal-access-token
    ```
+   Leave these unset and the workflow still builds and scans; it just skips the push.
 
 2. **Trigger the workflow** by pushing to `main` or opening a pull request:
    ```bash
@@ -179,35 +185,28 @@ Every push to `main` or `develop`, and every pull request, automatically:
 3. **View results**:
    - GitHub Actions tab: full build logs and scan output
    - GitHub Security tab (Code scanning alerts): vulnerability details
-   - Pull request comments: markdown-formatted scan summary
+   - Pull request comments: scan summary, also saved as a workflow artifact
 
 ### Scanning Locally
 
 Before pushing, scan your local image:
 
 ```bash
-# Build image
 docker build -t nfl-parlay-advisor:local .
+```
 
-# Scan with Docker Scout
-docker scout cves nfl-parlay-advisor:local
-
-# View fixable vulnerabilities only
-docker scout cves --only-fixed nfl-parlay-advisor:local
+```bash
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image nfl-parlay-advisor:local
 ```
 
 ### Vulnerability Gate
 
-The workflow fails if **critical** vulnerabilities are detected. To adjust the threshold, edit `.github/workflows/docker-build-scan.yml`:
+The workflow fails if **critical** vulnerabilities with a known fix are detected. To
+adjust the threshold, edit the "Check for critical vulnerabilities" step in
+`.github/workflows/docker-build-scan.yml`:
 
 ```yaml
-- name: Check for critical vulnerabilities
-  run: |
-    docker scout cves --format json ${{ env.IMAGE }}:${{ env.TAG }} | \
-    jq -e '.summary.critical == 0' || exit 1
-```
-
-Change to also fail on high-severity:
-```yaml
-jq -e '(.summary.critical + .summary.high) == 0' || exit 1
+severity: CRITICAL      # add HIGH to also fail on high-severity
+ignore-unfixed: true    # set false to also fail on vulns with no fix available
+exit-code: '1'
 ```

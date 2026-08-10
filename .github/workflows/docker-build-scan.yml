@@ -76,49 +76,79 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Docker Scout vulnerability scan
-        uses: docker/scout-action@v1
+      # Trivy rather than Docker Scout: Scout requires Docker Hub
+      # authentication for every command ("to use scout features you need to
+      # be authenticated against Docker Hub"), so it can't scan at all on a
+      # checkout with no DOCKER_* secrets configured - which is what kept
+      # failing this pipeline. Trivy needs no account and scans the same
+      # locally-loaded image.
+      - name: Scan image for vulnerabilities (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          command: cves
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          only-fixed: false
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: sarif
-          output: scout-report.sarif
+          output: trivy-results.sarif
 
       - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        # hashFiles guard: without it, `always()` would make this step fail
+        # the job whenever the scan above never produced a file.
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: scout-report.sarif
-          category: docker-scout
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      # Deliberately ordered before the critical-vulnerability gate below, so
+      # the report artifact and PR comment still have content on a failing run.
+      - name: Generate scan report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: table
+          output: SCAN_REPORT.md
 
       - name: Check for critical vulnerabilities
-        run: |
-          docker scout cves --format json ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} | \
-          jq -e '.summary.critical == 0' || (echo "Critical vulnerabilities found!" && exit 1)
-
-      - name: Generate scan report (markdown)
-        if: always()
-        run: docker scout cves --format markdown ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} > SCAN_REPORT.md
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
 
       - name: Comment PR with scan results
-        if: github.event_name == 'pull_request' && always()
+        if: always() && github.event_name == 'pull_request'
+        # A PR from a fork gets a read-only GITHUB_TOKEN, so commenting is
+        # expected to fail there - that shouldn't fail the scan itself.
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            if (!fs.existsSync('SCAN_REPORT.md')) {
+              core.info('No scan report to comment with.');
+              return;
+            }
             const report = fs.readFileSync('SCAN_REPORT.md', 'utf8');
+            // Trivy's table output isn't markdown, and GitHub rejects
+            // comment bodies over 65536 chars.
+            const max = 60000;
+            const body = report.length > max
+              ? report.slice(0, max) + '\n...truncated, see the workflow artifact for the full report.'
+              : report;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '## 🛡️ Docker Scout Vulnerability Scan\n\n' + report
+              body: '## 🛡️ Trivy Vulnerability Scan\n\n```\n' + body + '\n```'
             });
 
       - name: Upload scan report as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: docker-scout-report
+          name: trivy-scan-report
           path: SCAN_REPORT.md
 
       - name: Push image to Docker Hub
