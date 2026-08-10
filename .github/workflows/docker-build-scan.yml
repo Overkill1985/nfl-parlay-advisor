@@ -34,6 +34,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Check Docker Hub credentials
+        # `if:` conditions can't reference the secrets context directly
+        # (GitHub Actions rejects the whole workflow file if they do) - so
+        # the presence check happens here, in a step's `env:`, where
+        # secrets *are* allowed, and the result is exposed as an output
+        # that later `if:` conditions can read instead.
+        id: dockerhub_creds
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          if [ -n "$DOCKER_USERNAME" ] && [ -n "$DOCKER_PASSWORD" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Log in to Docker Hub
         id: dockerhub_login
         # Only attempted when actually pushing, and only when both secrets
@@ -42,7 +59,7 @@ jobs:
         # separately checks this step's own outcome before publishing.
         if: >
           github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-          secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != ''
+          steps.dockerhub_creds.outputs.configured == 'true'
         continue-on-error: true
         uses: docker/login-action@v3
         with:
