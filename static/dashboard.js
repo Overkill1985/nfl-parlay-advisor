@@ -20,22 +20,68 @@ function populateDashWeekSelect(current) {
   dashWeekInitialized = true;
 }
 
-function renderInjuries(injuries) {
+// Practice participation arrives as full sentences ("Did Not Participate In
+// Practice"); the table only has room for the distinction that matters.
+function shortPracticeStatus(status) {
+  if (!status) return "—";
+  const s = status.toLowerCase();
+  if (s.includes("did not participate")) return "DNP";
+  if (s.includes("limited")) return "Limited";
+  if (s.includes("full")) return "Full";
+  return status;
+}
+
+function renderInjuryFeedNote(feed) {
+  if (!feed) return "";
+  const parts = [];
+  if (feed.last_fetched_at) {
+    parts.push(`Updated ${new Date(feed.last_fetched_at * 1000).toLocaleString()}`);
+  }
+  if (feed.next_checkpoint) {
+    parts.push(`next check ${new Date(feed.next_checkpoint).toLocaleString()}`);
+  }
+  parts.push(escapeHtml(feed.schedule || ""));
+  let note = `<p class="section-hint">${parts.filter(Boolean).join(" · ")}</p>`;
+  if (!feed.nflverse_available) {
+    note += `<p class="section-hint">Practice participation (DNP/Limited/Full) comes from nflverse's official injury report, not available for this season yet${feed.nflverse_reason ? ` (${escapeHtml(feed.nflverse_reason)})` : ""} — showing ESPN's live feed only.</p>`;
+  }
+  if (!feed.espn_available) {
+    note += `<p class="section-hint" style="color:#e0654e">ESPN's live injury feed is unavailable${feed.espn_reason ? ` (${escapeHtml(feed.espn_reason)})` : ""}.</p>`;
+  }
+  return note;
+}
+
+function renderInjuries(injuries, feed) {
+  const note = renderInjuryFeedNote(feed);
   if (!injuries.length) {
-    injuryTableWrap.innerHTML = "<p>No non-active injury designations reported for this filter.</p>";
+    injuryTableWrap.innerHTML = note + "<p>No non-active injury designations reported for this filter.</p>";
     return;
   }
-  const rows = injuries.map(p => `
+  const rows = injuries.map(p => {
+    const severe = p.status === "OUT" || p.status === "IR" || p.status === "SUSPENDED";
+    const injuryLabel = [p.injury, p.secondary_injury].filter(Boolean).join(" / ") || "—";
+    return `
     <tr>
       <td>${escapeHtml(p.name)}</td>
       <td>${escapeHtml(p.team)}</td>
       <td>${escapeHtml(p.position)}</td>
-      <td><span class="badge ${p.injury_status === "OUT" || p.injury_status === "IR" ? "badge-out" : ""}">${escapeHtml(p.injury_status)}</span></td>
+      <td><span class="badge ${severe ? "badge-out" : ""}">${escapeHtml(p.status)}</span></td>
+      <td>${escapeHtml(injuryLabel)}</td>
+      <td title="${escapeHtml(p.practice_status || "")}">${escapeHtml(shortPracticeStatus(p.practice_status))}</td>
+      <td title="${escapeHtml((p.sources || []).join(", "))}">${escapeHtml((p.sources || []).length > 1 ? "2 sources" : (p.sources || ["—"])[0])}</td>
     </tr>
-  `).join("");
+    ${p.comment ? `<tr><td colspan="7" class="section-hint">${escapeHtml(p.comment)}</td></tr>` : ""}
+  `;
+  }).join("");
   injuryTableWrap.innerHTML = `
+    ${note}
     <table>
-      <thead><tr><th>Player</th><th>Team</th><th>Pos</th><th>Status</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Player</th><th>Team</th><th>Pos</th><th>Status</th>
+          <th>Injury</th><th>Practice</th><th>Source</th>
+        </tr>
+      </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
@@ -128,7 +174,7 @@ async function loadDashboard() {
   try {
     const data = await apiGet(`/api/dashboard?${weekParam}position=${position}`);
     populateDashWeekSelect(data.current_week);
-    renderInjuries(data.injuries);
+    renderInjuries(data.injuries, data.injury_feed);
     renderForm(data.recent_form, data.nflverse_usage_available, data.nflverse_usage_reason);
     renderWeather(data.weather);
     dashStatus.textContent = `Week ${data.week} · ${data.injuries.length} injury note(s) · ${data.weather.length} game(s)`;

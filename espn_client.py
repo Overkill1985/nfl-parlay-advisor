@@ -18,6 +18,7 @@ estimate - see `get_week_stats` below, which does this automatically.
 import datetime
 import json
 import os
+import re
 import time
 import urllib.request
 
@@ -51,6 +52,9 @@ SCOREBOARD_URL_TMPL = (
     "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
     "?seasontype=2&week={week}&dates={season}"
 )
+INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
+INJURIES_CACHE_TTL_SECONDS = 6 * 60 * 60  # floor between fetches; the real
+# cadence is the Thu/Sun schedule in injury_report.py, which forces a refresh
 
 PRO_TEAM_ABBR = {
     0: "FA", 1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL", 7: "DEN",
@@ -94,6 +98,36 @@ INJURY_STATUS_MAP = {
     "SUSPENSION": "SUSPENDED",
     "DAY_TO_DAY": "QUESTIONABLE",
 }
+
+# The site.api injuries feed spells its statuses differently from the fantasy
+# API's injuryStatus field above ("Injured Reserve" vs "INJURY_RESERVE"), so it
+# needs its own map rather than reusing INJURY_STATUS_MAP. Unrecognized values
+# pass through uppercased instead of being dropped.
+SITE_INJURY_STATUS_MAP = {
+    "ACTIVE": "ACTIVE",
+    "PROBABLE": "PROBABLE",
+    "QUESTIONABLE": "QUESTIONABLE",
+    "DOUBTFUL": "DOUBTFUL",
+    "OUT": "OUT",
+    "INJURED RESERVE": "IR",
+    "SUSPENSION": "SUSPENDED",
+    "DAY-TO-DAY": "QUESTIONABLE",
+}
+
+# site.api's injuries feed omits athlete.id entirely, but every record carries
+# player-card links with the id in the path (".../player/_/id/4430841/name").
+# Pulling it out of the href keeps the join to ESPN player records on an exact
+# id, preserving this codebase's no-fuzzy-name-matching rule.
+_ATHLETE_ID_RE = re.compile(r"/id/(\d+)/")
+
+
+def _athlete_espn_id(athlete):
+    for link in (athlete or {}).get("links") or []:
+        match = _ATHLETE_ID_RE.search(link.get("href") or "")
+        if match:
+            return int(match.group(1))
+    return None
+
 
 # Stat 41 looked like it might be receiving targets, but it exactly matches
 # receptions (stat 53) in every player checked - not a distinct field, or at
@@ -277,6 +311,111 @@ def get_scoreboard(season, week, force_refresh=False):
         "fetched_at": time.time(),
         "all_completed": all_completed,
         "teams": teams,
+    }
+    atomic_write_json(cache_path, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Injuries (site.api.espn.com - the live leaguewide feed, not the per-player
+# injuryStatus already carried on the fantasy API's player records)
+# ---------------------------------------------------------------------------
+
+def _injuries_cache_path():
+    return os.path.join(CACHE_DIR, "injuries.json")
+
+
+def parse_injuries_payload(data):
+    """Pure: turns the raw injuries payload into {espn_id: {...}}. Split out
+    from the fetch so it can be unit-tested against a fixture."""
+    players = {}
+    for team in data.get("injuries", []):
+        # This feed reports a team id, not an abbreviation, but ESPN uses one
+        # team-id space across both its API families - verified all 32 ids
+        # here resolve through PRO_TEAM_ABBR - so normalizing to this app's
+        # abbreviation dialect needs no second lookup table.
+        try:
+            team_abbr = PRO_TEAM_ABBR.get(int(team.get("id")))
+        except (TypeError, ValueError):
+            team_abbr = None
+        for rec in team.get("injuries", []) or []:
+            athlete = rec.get("athlete") or {}
+            espn_id = _athlete_espn_id(athlete)
+            if espn_id is None:
+                continue
+            raw_status = (rec.get("status") or "").strip()
+            players[espn_id] = {
+                "status": SITE_INJURY_STATUS_MAP.get(raw_status.upper(), raw_status.upper() or None),
+                "raw_status": raw_status or None,
+                "name": athlete.get("displayName"),
+                "detail": (rec.get("type") or {}).get("description"),
+                "comment": rec.get("shortComment") or rec.get("longComment"),
+                "date": rec.get("date"),
+                "team": team_abbr,
+                "team_name": team.get("displayName"),
+            }
+    return players
+
+
+def injuries_cache_fetched_at():
+    """POSIX timestamp the injuries cache was last successfully written, or
+    None. Never touches the network - the Thu/Sun scheduler in
+    injury_report.py needs to ask "how old is what I have?" without that
+    question itself triggering a fetch."""
+    cache_path = _injuries_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return cached.get("fetched_at") if cached.get("available") else None
+
+
+def get_injuries(force_refresh=False):
+    """Leaguewide injury feed: {"available": True, "fetched_at": ..., "players":
+    {espn_id: {status, raw_status, detail, comment, date, team}}}.
+
+    Same `site.api.espn.com` host family as `get_scoreboard`, so it goes
+    through `_get_no_ua` for the same reason (see that function's comment).
+
+    This is a *different* and fresher signal than the `injury_status` field
+    already on each fantasy-API player record: it covers the whole league
+    (including players outside the fantasy top-N), updates continuously, and
+    carries a human-readable note. Returns {"available": False, "reason": ...}
+    rather than raising, so a feed hiccup never takes down the refresh loop.
+    """
+    cache_path = _injuries_cache_path()
+    if not force_refresh and os.path.exists(cache_path):
+        age = time.time() - os.path.getmtime(cache_path)
+        if age < INJURIES_CACHE_TTL_SECONDS:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("available"):
+                cached["players"] = {int(k): v for k, v in cached["players"].items()}
+            return cached
+
+    try:
+        data = _get_no_ua(INJURIES_URL)
+    except Exception as exc:
+        # Don't cache a failure over a cache that was working - a transient
+        # blip shouldn't erase yesterday's usable report.
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as f:
+                stale = json.load(f)
+            if stale.get("available"):
+                stale["players"] = {int(k): v for k, v in stale["players"].items()}
+                stale["stale"] = True
+                return stale
+        return {"available": False, "reason": f"fetch_error: {exc}"}
+
+    players = parse_injuries_payload(data)
+    result = {
+        "available": True,
+        "fetched_at": time.time(),
+        "source_timestamp": data.get("timestamp"),
+        "players": players,
     }
     atomic_write_json(cache_path, result)
     return result

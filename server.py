@@ -3,6 +3,7 @@
 Run with: python server.py
 Then open http://localhost:8787
 """
+import datetime
 import json
 import mimetypes
 import os
@@ -16,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import correlation
 import espn_client
 import history
+import injury_report
 import nflverse_client
 import odds_client
 import odds_math
@@ -113,6 +115,94 @@ def _fetch_scores_for_weeks(weeks):
         if sb.get("available"):
             scores_by_week[week] = sb["teams"]
     return scores_by_week
+
+
+def _build_injury_view(week, players, force_refresh=False):
+    """Merged ESPN + nflverse injury report for `week`, annotated with the
+    player names/teams this app already knows.
+
+    Reads from cache by default. Live fetching is the scheduler's job
+    (`_refresh_injuries`), not a request handler's - same rule odds_client
+    follows, so loading a page can never stampede an upstream feed.
+    """
+    espn = espn_client.get_injuries(force_refresh=force_refresh)
+    nflv = nflverse_client.get_injury_reports(SEASON, force_refresh=force_refresh)
+
+    merged = injury_report.merge_injury_sources(
+        espn.get("players") if espn.get("available") else {},
+        nflv.get("players") if nflv.get("available") else {},
+        week,
+    )
+
+    known = {p["id"]: p for p in players}
+    rows = []
+    for espn_id, rec in merged.items():
+        player = known.get(espn_id)
+        # nflverse carries its own name/team/position, so a player outside
+        # this app's projection set is still identifiable rather than showing
+        # up as a bare id.
+        nflv_rec = (nflv.get("players", {}).get(espn_id) or {}).get(week) or {}
+        rows.append({
+            "player_id": espn_id,
+            # Prefer this app's own player record, then ESPN's injury feed,
+            # then nflverse - so a player outside the projection set is still
+            # identified by name rather than showing up as a bare id.
+            "name": (player["name"] if player
+                     else rec.get("espn_name") or nflv_rec.get("full_name")),
+            "team": (player["team"] if player
+                     else rec.get("espn_team") or nflv_rec.get("team")),
+            "position": player["position"] if player else nflv_rec.get("position"),
+            "in_projections": player is not None,
+            **rec,
+        })
+
+    # Most consequential first; ACTIVE entries are the bulk of the ESPN feed
+    # and are only interesting as a "no concern" confirmation.
+    rows.sort(
+        key=lambda r: (
+            -injury_report.STATUS_SEVERITY.get(r.get("status"), 0),
+            not r["in_projections"],
+            r.get("name") or "",
+        )
+    )
+
+    last_fetched = espn.get("fetched_at")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    next_cp = injury_report.next_checkpoint_after(now)
+    return {
+        "season": SEASON,
+        "week": week,
+        "players": rows,
+        "espn_available": espn.get("available", False),
+        "espn_reason": espn.get("reason"),
+        "nflverse_available": nflv.get("available", False),
+        "nflverse_reason": nflv.get("reason"),
+        "last_fetched_at": last_fetched,
+        "next_checkpoint": next_cp.isoformat() if next_cp else None,
+        "schedule": "Thursdays 6:00 PM ET and Sundays 11:00 AM ET",
+        "refresh_due": injury_report.is_refresh_due(last_fetched, now),
+    }
+
+
+def _refresh_injuries():
+    """Refreshes the injury feeds only when a scheduled checkpoint has passed.
+
+    Deliberately ignores the background loop's generic `force_refresh`: the
+    user asked for these feeds on a Thursday-6pm/Sunday-11am ET cadence, not
+    the app's 6-hourly one, and honoring force here would quietly turn it
+    back into a 6-hourly fetch. `injury_report.is_refresh_due` compares
+    against the last checkpoint that already passed, so a machine that was
+    off on Thursday evening still catches up on its next run.
+    """
+    last_fetched = espn_client.injuries_cache_fetched_at()
+    if not injury_report.is_refresh_due(last_fetched):
+        return "up to date"
+
+    espn = espn_client.get_injuries(force_refresh=True)
+    nflv = nflverse_client.get_injury_reports(SEASON, force_refresh=True)
+    espn_desc = "ok" if espn.get("available") else f"failed ({espn.get('reason')})"
+    nflv_desc = "ok" if nflv.get("available") else f"unavailable ({nflv.get('reason')})"
+    return f"refreshed (espn: {espn_desc}, nflverse: {nflv_desc})"
 
 
 def _describe_pick(pick):
@@ -306,13 +396,33 @@ class Handler(BaseHTTPRequestHandler):
         if team:
             players = [p for p in players if p["team"] == team.upper()]
 
+        # The merged live feed + official report, narrowed to the players this
+        # tab's position/team filter selected.
+        injury_view = _build_injury_view(week, players)
+        filtered_ids = {p["id"] for p in players}
         injuries = [
-            {
-                "player_id": p["id"], "name": p["name"], "team": p["team"], "position": p["position"],
-                "injury_status": p["injury_status"], "injured": p["injured"],
-            }
-            for p in players if p["injury_status"] not in ("ACTIVE", "UNKNOWN")
+            r for r in injury_view["players"]
+            if r["player_id"] in filtered_ids and r.get("status") not in ("ACTIVE", None)
         ]
+
+        # A player can carry a fantasy-API designation without appearing in
+        # the leaguewide live feed at all, so union the two rather than
+        # letting the richer source silently drop him.
+        covered = {r["player_id"] for r in injuries}
+        for p in players:
+            if p["id"] in covered or p["injury_status"] in ("ACTIVE", "UNKNOWN"):
+                continue
+            injuries.append({
+                "player_id": p["id"], "name": p["name"], "team": p["team"],
+                "position": p["position"], "status": p["injury_status"],
+                "in_projections": True, "practice_status": None, "injury": None,
+                "secondary_injury": None, "comment": None, "detail": None,
+                "updated_at": None, "sources": ["espn_fantasy"],
+            })
+        injuries.sort(
+            key=lambda r: (-injury_report.STATUS_SEVERITY.get(r.get("status"), 0),
+                           r.get("name") or "")
+        )
 
         usage_result = nflverse_client.get_usage(SEASON)
         usage_by_player = usage_result.get("players", {}) if usage_result.get("available") else {}
@@ -359,12 +469,31 @@ class Handler(BaseHTTPRequestHandler):
             "targets_stat_available": espn_client.TARGETS_STAT_CONFIRMED,
             "nflverse_usage_available": usage_result.get("available", False),
             "nflverse_usage_reason": usage_result.get("reason"),
+            "injury_feed": {
+                "espn_available": injury_view["espn_available"],
+                "nflverse_available": injury_view["nflverse_available"],
+                "nflverse_reason": injury_view["nflverse_reason"],
+                "last_fetched_at": injury_view["last_fetched_at"],
+                "next_checkpoint": injury_view["next_checkpoint"],
+                "schedule": injury_view["schedule"],
+            },
         }
 
     @route("GET", r"^/api/usage$")
     def get_usage_route(self, query):
         season = _query_int(query, "season", default=SEASON)
         return nflverse_client.get_usage(season)
+
+    @route("GET", r"^/api/injuries$")
+    def get_injuries_route(self, query):
+        """Merged injury report. `refresh=1` forces a live fetch, bypassing
+        the Thu/Sun schedule - the manual escape hatch for when you want the
+        latest right now rather than at the next checkpoint."""
+        data = espn_client.get_projections(SEASON)
+        week = _query_int(query, "week", default=data["current_week"])
+        week = max(1, min(espn_client.MAX_WEEK, week))
+        force = query.get("refresh", ["0"])[0] == "1"
+        return _build_injury_view(week, data["players"], force_refresh=force)
 
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):
@@ -692,9 +821,16 @@ def _refresh_cycle(force_refresh):
     except Exception:
         traceback.print_exc()
 
+    injuries_status = "error"
+    try:
+        injuries_status = _refresh_injuries()
+    except Exception:
+        traceback.print_exc()
+
     print(f"Refresh: projections updated, {snapshot_count} legs snapshotted for week "
           f"{current_week}, {graded_snapshots} snapshots and {graded_picks} picks graded, "
-          f"nflverse usage: {usage_status}, market odds: {odds_status}")
+          f"nflverse usage: {usage_status}, market odds: {odds_status}, "
+          f"injuries: {injuries_status}")
 
 
 def _background_refresh_loop():

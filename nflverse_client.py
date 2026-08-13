@@ -42,6 +42,7 @@ RELEASE_BASE = "https://github.com/nflverse/nflverse-data/releases/download"
 CROSSWALK_URL = f"{RELEASE_BASE}/players/players.csv"
 PLAYER_STATS_URL_TMPL = f"{RELEASE_BASE}/player_stats/player_stats_{{season}}.csv"
 SNAP_COUNTS_URL_TMPL = f"{RELEASE_BASE}/snap_counts/snap_counts_{{season}}.csv"
+INJURIES_URL_TMPL = f"{RELEASE_BASE}/injuries/injuries_{{season}}.csv"
 
 # nflverse's own `team`/`recent_team` columns use a slightly different
 # abbreviation dialect than ESPN's (PRO_TEAM_ABBR in espn_client.py) for a
@@ -73,6 +74,16 @@ def _coerce_id(raw):
         return int(float(raw))
     except (TypeError, ValueError):
         return None
+
+
+def _blank_to_none(raw):
+    """Empty cells and R-style "NA" both mean "not reported" here."""
+    if raw is None:
+        return None
+    text = raw.strip() if isinstance(raw, str) else raw
+    if text == "" or (isinstance(text, str) and text.upper() == "NA"):
+        return None
+    return text
 
 
 def _to_float(raw):
@@ -148,6 +159,58 @@ def parse_snap_counts_rows(rows):
             "st_pct": _to_float(row.get("st_pct")),
         }
     return by_player
+
+
+def parse_injury_rows(rows):
+    """rows: list of dicts from injuries_{season}.csv. Returns
+    {gsis_id: {week: {report_status, report_primary_injury,
+    report_secondary_injury, practice_status, practice_primary_injury,
+    practice_secondary_injury, team, position, full_name}}}.
+
+    This is the official NFL injury report - the same data a sportsbook or a
+    beat writer works from. Its distinguishing value over ESPN's live feed is
+    `practice_status` (Did Not Participate / Limited / Full across the
+    practice week) and the named body part, neither of which ESPN exposes.
+    Blank cells stay None rather than "" so the frontend can distinguish
+    "not reported" from a real value.
+    """
+    by_player = {}
+    for row in rows:
+        gsis_id = row.get("gsis_id")
+        week_raw = row.get("week")
+        if not gsis_id or not week_raw:
+            continue
+        try:
+            week = int(week_raw)
+        except ValueError:
+            continue
+
+        by_player.setdefault(gsis_id, {})[week] = {
+            "report_status": _blank_to_none(row.get("report_status")),
+            "report_primary_injury": _blank_to_none(row.get("report_primary_injury")),
+            "report_secondary_injury": _blank_to_none(row.get("report_secondary_injury")),
+            "practice_status": _blank_to_none(row.get("practice_status")),
+            "practice_primary_injury": _blank_to_none(row.get("practice_primary_injury")),
+            "practice_secondary_injury": _blank_to_none(row.get("practice_secondary_injury")),
+            "team": _blank_to_none(row.get("team")),
+            "position": _blank_to_none(row.get("position")),
+            "full_name": _blank_to_none(row.get("full_name")),
+        }
+    return by_player
+
+
+def merge_injuries(crosswalk, injuries_by_gsis):
+    """Rekeys parse_injury_rows' output from gsis_id to espn_id via the
+    crosswalk, matching merge_usage's exact-id-only approach. Players with no
+    espn_id in the crosswalk (mostly linemen and defensive players who never
+    appear in fantasy projections) are dropped rather than name-matched."""
+    merged = {}
+    for gsis_id, weeks in (injuries_by_gsis or {}).items():
+        espn_id = crosswalk["by_gsis"].get(gsis_id)
+        if espn_id is None:
+            continue
+        merged.setdefault(espn_id, {}).update(weeks)
+    return merged
 
 
 def merge_usage(crosswalk, player_stats_by_gsis, snap_counts_by_pfr):
@@ -309,6 +372,58 @@ def get_snap_counts(season, force_refresh=False):
 
     by_pfr = parse_snap_counts_rows(rows)
     result = {"available": True, "season": season, "fetched_at": time.time(), "by_pfr": by_pfr}
+    atomic_write_json(cache_path, result)
+    return result
+
+
+def _injuries_cache_path(season):
+    return os.path.join(CACHE_DIR, f"nflverse_injuries_{season}.json")
+
+
+def get_injury_reports(season, force_refresh=False):
+    """Official NFL injury reports for `season`, keyed by ESPN player id:
+    {"available": True, "season": ..., "players": {espn_id: {week: {...}}}}
+
+    Returns {"available": False, "reason": "not_yet_published"|...} when the
+    season's file doesn't exist upstream yet - the same normal, expected state
+    documented for the other nflverse fetchers, not an error.
+    """
+    cache_path = _injuries_cache_path(season)
+    if not force_refresh and os.path.exists(cache_path):
+        age = time.time() - os.path.getmtime(cache_path)
+        if age < STATS_CACHE_TTL_SECONDS:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("season") == season:
+                if cached.get("available"):
+                    # Both levels of key are ints in memory but strings in
+                    # JSON - the espn_id keys as well as the inner week keys.
+                    cached["players"] = _normalize_week_keys(
+                        {int(k): v for k, v in cached["players"].items()}
+                    )
+                return cached
+
+    crosswalk = get_players_crosswalk(force_refresh=force_refresh)
+    if not crosswalk.get("available"):
+        return {
+            "available": False,
+            "season": season,
+            "reason": crosswalk.get("reason", "crosswalk_unavailable"),
+        }
+
+    rows, error = _fetch_csv_rows(INJURIES_URL_TMPL.format(season=season))
+    if rows is None:
+        result = {"available": False, "season": season, "reason": error}
+        atomic_write_json(cache_path, result)
+        return result
+
+    players = merge_injuries(crosswalk, parse_injury_rows(rows))
+    result = {
+        "available": True,
+        "season": season,
+        "fetched_at": time.time(),
+        "players": players,
+    }
     atomic_write_json(cache_path, result)
     return result
 

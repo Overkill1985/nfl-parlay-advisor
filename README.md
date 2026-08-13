@@ -52,6 +52,15 @@ from nflverse, real final scores for grading, and (optionally) real market odds.
   with passing props, and "too many legs in one game" concentration risk - plus a
   plain-English game-script summary per game, preferring a manually-tracked pick, then
   real auto market odds, then a clearly-labeled roster-strength guess, in that order.
+- **Injury reports** ([`injury_report.py`](injury_report.py)): two sources merged into
+  one view - ESPN's leaguewide live feed (status plus the beat-writer note, updated
+  continuously) and [nflverse](https://github.com/nflverse/nflverse-data)'s official
+  NFL injury report (practice participation DNP/Limited/Full, and the named body
+  part). ESPN wins any disagreement on game status since it's the live feed; every row
+  shows which sources backed it. Refreshed on a fixed schedule - **Thursdays 6:00 PM ET
+  and Sundays 11:00 AM ET** - after Thursday's practice report and ~90 minutes before
+  the Sunday afternoon slate. If the app wasn't running at a checkpoint it catches up
+  the next time it starts, rather than skipping that window.
 - **Weather** ([`weather.py`](weather.py)): a static 32-team stadium/roof reference
   table plus live forecasts from Open-Meteo (free, no API key) for outdoor stadiums.
   Dome/retractable-roof games never hit the network. Forecasts more than ~16 days out
@@ -116,9 +125,14 @@ mapping, not the app.
   score, and the same correlation/game-script checks.
 
 **Dashboard tab** - injury/usage/weather:
-- Injury report (ESPN's designations), trailing-5-game stat trend plus real snap %/
-  target share/WOPR from nflverse when available for that player/week, and per-game
-  weather with prop-impact flags.
+- **Injury report**: status, the specific injury, practice participation, and the
+  latest beat-writer note, merged from ESPN's live feed and nflverse's official
+  report. Shows when it last refreshed and when the next scheduled check is due
+  (Thursdays 6 PM ET / Sundays 11 AM ET). Practice-participation columns depend on
+  nflverse having published the season - during a live season that half often lags,
+  which the page states plainly instead of showing blank columns.
+- Trailing-5-game stat trend plus real snap %/target share/WOPR from nflverse when
+  available for that player/week, and per-game weather with prop-impact flags.
 
 **History tab**:
 - **Your Picks Performance**: ROI and win rate by leg count, market type, direction,
@@ -134,7 +148,8 @@ mapping, not the app.
 
 ```
 espn_client.py     ESPN API client (projections, schedule, injuries, scores)
-nflverse_client.py Real usage data (snap %, target share, WOPR) from nflverse CSVs
+nflverse_client.py Real usage data (snap %, target share, WOPR) + official injury reports
+injury_report.py   Thu/Sun ET refresh schedule + two-source injury merge
 odds_client.py     Real market odds (moneyline/spread/total) from The Odds API
 parlay_engine.py   Prop-leg generation, probability model, parlay combination logic
 odds_math.py       Odds conversions, payout, expected value, risk score

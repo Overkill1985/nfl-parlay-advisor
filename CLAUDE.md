@@ -49,7 +49,8 @@ There is no build step, linter, or formatter configured.
 `espn_client.py` is the only module that talks to ESPN, across **two distinct,
 unauthenticated host families**: `lm-api-reads.fantasy.espn.com` (the fantasy API -
 `get_projections`, `get_current_week`, `get_schedule`) and `site.api.espn.com` (general
-sports scores, used only by `get_scoreboard` for real final scores). These two hosts
+sports data - `get_scoreboard` for real final scores, `get_injuries` for the
+leaguewide live injury feed). These two hosts
 have opposite User-Agent requirements, discovered the hard way: the fantasy host wants
 an explicit custom UA (`_get`), while the scoreboard host 403s any request carrying a
 custom UA at all - reproducibly, regardless of value - and only works with urllib's own
@@ -100,6 +101,58 @@ silently miss on any cache hit (this bit the app once already: see git history a
   `nflverse_client`'s `NFLVERSE_TEAM_ABBR`, `odds_client`'s `ODDS_API_TEAM_ABBR`)
   normalizes team names to ESPN's abbreviation dialect at its own boundary - nothing
   downstream (`correlation.py` etc.) should ever see a non-ESPN abbreviation.
+
+### Injury reporting (two sources, one schedule)
+
+Injuries come from two feeds merged in `injury_report.py`:
+
+- `espn_client.get_injuries()` - ESPN's leaguewide live feed (`site.api`), ~800
+  players, updated continuously, carrying a status plus a human-readable beat-writer
+  note. **This feed omits `athlete.id`** - the ESPN player id is recovered by regex
+  from the player-card link in `athlete.links` (`.../player/_/id/4430841/...`), which
+  keeps the join on an exact id rather than a name. It also reports a team *id* rather
+  than an abbreviation; those ids resolve through the existing `PRO_TEAM_ABBR` (ESPN
+  uses one team-id space across both API families - all 32 verified), so no second
+  team table was needed.
+- `nflverse_client.get_injury_reports(season)` - the official NFL injury report,
+  contributing what ESPN doesn't carry: `practice_status` (DNP/Limited/Full through
+  the practice week) and the named body part. Joins `gsis_id` -> `espn_id` through the
+  same crosswalk as usage data. Subject to the same publication lag as everything else
+  from nflverse, so for a live season this half is often `not_yet_published` while
+  ESPN's half works - the UI says so rather than showing empty columns.
+
+**ESPN wins any status disagreement** - it's the live feed, while the official report
+is filed once and not revised. `sources` on each merged record names which feeds
+contributed, so a cross-confirmed entry is distinguishable from a single-source one.
+`server.py`'s dashboard additionally unions in the fantasy API's own per-player
+`injury_status`, tagged `espn_fantasy`, since a player can carry a designation there
+without appearing in the leaguewide feed at all.
+
+**Why not Yahoo**: the original request was to scrape
+`sports.yahoo.com/nfl/injuries`. Yahoo's `robots.txt` disallows `ClaudeBot`,
+`Claude-Web`, and `anthropic-ai` sitewide, so an AI agent shouldn't be crawling it to
+build or maintain a parser. Both sources above are structured feeds carrying strictly
+more than that page renders, and neither breaks on an HTML redesign.
+
+**The refresh schedule is Thursday 6:00 PM ET and Sunday 11:00 AM ET**
+(`injury_report.SCHEDULE_CHECKPOINTS`), chosen to sit after Thursday's practice report
+and ~90 minutes before the Sunday 1pm slate. Two non-obvious things about it:
+
+1. **US Eastern is implemented by hand** (`injury_report._USEastern`), not via
+   `zoneinfo`. Windows ships no IANA tz database, and stdlib `zoneinfo` falls back to
+   the `tzdata` *pip* package - which the zero-dependency constraint forbids. So
+   `ZoneInfo("America/New_York")` raises `ZoneInfoNotFoundError` on a Windows host
+   while working fine in the Linux container: silently divergent behavior per platform.
+   The hand-rolled version applies the post-2007 DST rule (second Sunday of March /
+   first Sunday of November) and is correct only for US Eastern, 2007 onward.
+2. **It catches up rather than firing.** This is a local app that is usually *not*
+   running at 6pm on a Thursday, so a scheduler that waits for the clock to strike
+   would never run. `is_refresh_due` instead asks whether the cached data predates the
+   most recent checkpoint that already passed - so a machine that was asleep all
+   Thursday evening refreshes on its next launch. `_refresh_injuries` in `server.py`
+   deliberately ignores the background loop's generic `force_refresh` for this reason;
+   honoring it would quietly demote the schedule back to the app's 6-hourly cadence.
+   `GET /api/injuries?refresh=1` is the manual override.
 
 ### Two kinds of "backtesting" - don't conflate them
 
@@ -169,6 +222,10 @@ becomes a 400 rather than an uncaught `ValueError`.
 - `weather.py` - static 32-team stadium/roof table + Open-Meteo forecasts for outdoor
   stadiums only (dome/retractable never hits the network). Forecasts beyond ~16 days
   out are reported `forecast_reliable: False` rather than guessed.
+- `injury_report.py` - the Thursday/Sunday ET refresh schedule and the two-source
+  injury merge. See "Injury reporting" above; the hand-rolled US Eastern tzinfo and
+  the catch-up (rather than fire-at-time) scheduling are both load-bearing, not
+  incidental.
 
 ### Frontend
 
