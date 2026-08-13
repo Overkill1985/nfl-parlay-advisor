@@ -6,3 +6,4 @@ data/backups/
 .env
 .claude/
 _bmad/
+*.log
