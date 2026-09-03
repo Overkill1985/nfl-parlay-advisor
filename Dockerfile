@@ -1,4 +1,7 @@
-FROM python:3.12-slim
+# Matches the Python the app is developed and tested against, so a stdlib
+# behavior difference can't hide between host and container. The tag floats
+# within 3.14, so each rebuild picks up upstream Python/Debian patches.
+FROM python:3.14-slim
 
 # No pip dependencies - the app is stdlib-only (see README).
 WORKDIR /app
