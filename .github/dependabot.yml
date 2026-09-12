@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # GitHub Actions used by docker-build-scan.yml. All are pinned to a
+  # floating major tag (e.g. @v7), so this mainly catches new majors -
+  # patch/minor releases within a major already apply automatically on
+  # every run with no file change needed.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # The Dockerfile's base image. Pinned to "python:3.14-slim" (a floating
+  # tag), which already picks up patch rebuilds automatically on every
+  # `docker build` - this mainly catches a new Python minor series
+  # becoming the thing worth moving to.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
