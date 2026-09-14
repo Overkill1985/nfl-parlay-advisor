@@ -45,7 +45,11 @@ function renderParlays(data) {
     return;
   }
   if (!data.parlays.length) {
-    parlaysEl.innerHTML = `<p>No parlays matched these filters (leg pool: ${data.leg_pool_size}). Try a different risk level or position.</p>`;
+    if (data.leg_pool_size === 0 && data.week_all_completed) {
+      parlaysEl.innerHTML = `<p>All of Week ${data.week}'s games have finished — nothing left to build a parlay from. Check back once Week ${data.week + 1} begins.</p>`;
+    } else {
+      parlaysEl.innerHTML = `<p>No parlays matched these filters (leg pool: ${data.leg_pool_size}). Try a different risk level or position.</p>`;
+    }
     return;
   }
 
@@ -94,8 +98,11 @@ function renderParlays(data) {
   const sourceSummary = data.legs_from_weekly_projection > 0
     ? `${data.legs_from_weekly_projection} live weekly-projection legs, ${data.legs_from_season_pace} season-pace-estimate legs`
     : `all ${data.legs_from_season_pace} legs are season-pace estimates — ESPN hasn't published Week ${data.week} projections yet`;
+  const gamesNote = data.games_remaining != null
+    ? ` &middot; ${data.games_remaining} game${data.games_remaining === 1 ? "" : "s"} left to play this week (finished games are excluded)`
+    : "";
 
-  parlaysEl.innerHTML = `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary}) &middot; showing top ${data.parlays.length}</p>` + cards;
+  parlaysEl.innerHTML = `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}</p>` + cards;
 
   parlaysEl.querySelectorAll(".track-btn").forEach(btn => {
     btn.addEventListener("click", () => {

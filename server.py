@@ -508,16 +508,31 @@ class Handler(BaseHTTPRequestHandler):
         week = max(1, min(espn_client.MAX_WEEK, week))
 
         schedule = espn_client.get_schedule(SEASON)
+        scoreboard = espn_client.get_scoreboard(SEASON, week)
         team_strength = _team_strength(data["players"])
         usage_result = nflverse_client.get_usage(SEASON)
         usage_by_player = usage_result.get("players", {}) if usage_result.get("available") else {}
 
-        legs = parlay_engine.build_legs(data["players"], week, risk=risk, position_filter=position, usage=usage_by_player)
+        legs = parlay_engine.build_legs(
+            data["players"], week, risk=risk, position_filter=position, usage=usage_by_player,
+            schedule=schedule, scoreboard=scoreboard,
+        )
         parlays = parlay_engine.build_parlays(
             legs, num_legs=num_legs, schedule=schedule, team_strength=team_strength,
             market_odds_by_game=_market_odds_by_game(),
         )
         weekly_leg_count = sum(1 for l in legs if l["source"] == "weekly_projection")
+
+        # So the frontend can tell "your filters are too narrow" apart from
+        # "this week is simply over" - very different messages for an empty
+        # leg pool. None (not 0) when the scoreboard itself is unavailable,
+        # since we don't actually know how many games remain in that case.
+        games_remaining = None
+        if scoreboard.get("available"):
+            teams = scoreboard.get("teams", {})
+            completed_teams = sum(1 for g in teams.values() if g.get("completed"))
+            games_remaining = (len(teams) - completed_teams) // 2
+
         return {
             "season": SEASON,
             "fetched_at": data["fetched_at"],
@@ -527,6 +542,8 @@ class Handler(BaseHTTPRequestHandler):
             "position": position,
             "num_legs": num_legs,
             "leg_pool_size": len(legs),
+            "games_remaining": games_remaining,
+            "week_all_completed": bool(scoreboard.get("available") and scoreboard.get("all_completed")),
             "legs_from_weekly_projection": weekly_leg_count,
             "legs_from_season_pace": len(legs) - weekly_leg_count,
             "parlays": parlays,
@@ -776,8 +793,16 @@ def _snapshot_current_week_legs(data, week):
     for calibration tracking - this is what lets us eventually check "did
     our 60%-confidence legs actually hit ~60% of the time?" (history.py).
     Uses the default balanced/all-positions view; the snapshot doesn't need
-    to cover every risk tier a user might pick, just a consistent baseline."""
-    legs = parlay_engine.build_legs(data["players"], week, risk="balanced", position_filter="ALL")
+    to cover every risk tier a user might pick, just a consistent baseline.
+    Excludes bye/already-completed games the same way the parlays route
+    does - snapshotting a "prediction" for a game that's already final isn't
+    a real prediction, and would just pollute calibration tracking."""
+    schedule = espn_client.get_schedule(SEASON)
+    scoreboard = espn_client.get_scoreboard(SEASON, week)
+    legs = parlay_engine.build_legs(
+        data["players"], week, risk="balanced", position_filter="ALL",
+        schedule=schedule, scoreboard=scoreboard,
+    )
     for leg in legs:
         storage.upsert_model_snapshot(
             season=SEASON, week=week,

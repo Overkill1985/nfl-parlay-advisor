@@ -72,19 +72,44 @@ def _usage_fields(player_usage):
     return fields
 
 
-def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None):
+def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None,
+                schedule=None, scoreboard=None):
     """`usage` is optional: nflverse_client.get_usage(season)["players"]
     ({espn_id: {week: {target_share, offense_pct, wopr, ...}}}). When
     supplied, matching legs get target_share/offense_pct/wopr attached as
     display/rationale metadata only - they don't affect the probability
     model in this pass. Omitted entirely (not zeroed) when unavailable for
-    a given player/week, so the frontend can tell "no data" from "0%"."""
+    a given player/week, so the frontend can tell "no data" from "0%".
+
+    `schedule` (espn_client.get_schedule's return) and `scoreboard`
+    (espn_client.get_scoreboard's return, for this same `week`) are both
+    optional and independently applied:
+    - `schedule` drops a player on a bye that week (no game at all - a team
+      absent from `schedule["weeks"][str(week)]` has no entry to check).
+    - `scoreboard`, when available, drops a player whose game has already
+      finished - there's nothing left to bet on once the final whistle
+      blows. A scoreboard fetch failure (`available: False`) leaves legs
+      unfiltered by completion rather than hiding everyone, since a
+      transient ESPN scoreboard hiccup shouldn't take down parlay
+      generation entirely.
+    Both are opt-in (default None = no filtering) so existing callers and
+    tests that don't pass them keep today's behavior."""
     tier_factor = RISK_TIERS.get(risk, RISK_TIERS["balanced"])
+    week_map = (schedule or {}).get("weeks", {}).get(str(week)) if schedule else None
+    completed_teams = set()
+    if scoreboard and scoreboard.get("available"):
+        completed_teams = {
+            abbr for abbr, game in scoreboard.get("teams", {}).items() if game.get("completed")
+        }
     legs = []
 
     for p in players:
         if position_filter != "ALL" and p["position"] != position_filter:
             continue
+        if week_map is not None and p["team"] not in week_map:
+            continue  # bye week - no game to build a prop for
+        if p["team"] in completed_teams:
+            continue  # game's over - nothing left to bet on
 
         per_game, _, source = espn_client.get_week_stats(p, week)
         cv_multiplier = WEEKLY_PROJECTION_CV_MULTIPLIER if source == "weekly_projection" else 1.0
