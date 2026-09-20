@@ -102,6 +102,45 @@ silently miss on any cache hit (this bit the app once already: see git history a
   normalizes team names to ESPN's abbreviation dialect at its own boundary - nothing
   downstream (`correlation.py` etc.) should ever see a non-ESPN abbreviation.
 
+### Sportsbook prop odds (the "Odds" dropdown on the Parlays tab)
+
+Picking a sportsbook prices parlays at that book's real lines and odds instead of the
+model's invented lines. Data comes from The Odds API's per-event endpoint
+(`odds_client.refresh_props`), and several things about it are non-obvious:
+
+- **It costs credits, so it is the one sanctioned exception to "only the background loop
+  fetches."** One credit per market per game (`PROP_MARKETS`, 5 markets), so a full slate
+  is ~75-80 credits against a 500/month free tier - impossible to poll (the existing
+  game-odds poll alone can burn ~12/day if the app runs 24/7). `POST /api/odds/props/refresh`
+  runs only from the user pressing the button (which needs a second confirming click that
+  states the cost), behind a 60-credit reserve (`CREDIT_RESERVE`, it trims the slate to
+  fit rather than spend into it) and a 10-minute cooldown. Never call `refresh_props` from
+  a timer, a page load, or `_refresh_cycle`. One fetch returns *every* book, so switching
+  books afterwards is free. The remaining balance is read off each response's
+  `x-requests-remaining` header into `cache/odds_quota.json`; the events list endpoint is free.
+- **Player matching cannot be an exact-id join.** The API identifies players only by name,
+  so `parlay_engine.match_prop_rows` is the one place this codebase matches on names: an
+  exact match on `normalize_player_name` (lowercase, no accents/punctuation/Jr-III) AND the
+  player's team must be one of the two in that game AND (via `matchups`) that game must be
+  the one the schedule has that team playing that week. A name matching two players on a
+  team is dropped as ambiguous, never guessed. Unmatched props are counted and shown.
+- **Bovada posts an alternate-line ladder under the standard market key** (28 pass-yard
+  outcomes vs 4 at every other book), so `parse_event_props` keeps one row per (market,
+  player) per book: the price nearest even money. Only Over/Yes sides are stored.
+- **The book's anytime-TD market means rushing + receiving TDs for everyone**, so
+  `build_book_legs` uses that for QBs too - not the passing TDs the model-only "Throws a TD
+  Pass" leg uses. Don't unify them.
+- **Games already kicked off are excluded** (their pre-game lines are gone), on top of the
+  usual completed/bye filtering.
+- **Deliberately no "expected value" ranking.** Against a real book this model's
+  probabilities (season-pace averages, no matchup information) routinely disagree wildly -
+  e.g. 83% vs a book-implied 39% on the same prop - so an EV sort would just rank wherever the
+  model is most wrong. Sort options are the book's implied probability (`market`, the
+  default in book mode and usually the more trustworthy), the model's probability, and
+  payout. The UI shows both probabilities side by side with that caveat.
+- Parlay payout is each leg's decimal odds multiplied. Books reprice *same-game* legs
+  because they're correlated, so those parlays are flagged (`same_game`) as approximate.
+
 ### Injury reporting (two sources, one schedule)
 
 Injuries come from two feeds merged in `injury_report.py`:

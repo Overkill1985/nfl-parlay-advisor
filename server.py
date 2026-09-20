@@ -495,12 +495,45 @@ class Handler(BaseHTTPRequestHandler):
         force = query.get("refresh", ["0"])[0] == "1"
         return _build_injury_view(week, data["players"], force_refresh=force)
 
+    @route("GET", r"^/api/odds/books$")
+    def get_odds_books(self, query):
+        """Which sportsbooks have prop odds cached, how fresh they are, and the
+        Odds API credit balance. Local files only - never spends credits."""
+        return odds_client.props_status()
+
+    # Refresh failures by reason -> HTTP status.
+    PROPS_REFRESH_ERROR_STATUS = {
+        "no_api_key": 400,
+        "cooldown": 429,
+        "insufficient_credits": 409,
+        "no_upcoming_games": 409,
+        "fetch_error": 502,
+    }
+
+    @route("POST", r"^/api/odds/props/refresh$")
+    def refresh_odds_props(self, query):
+        """SPENDS Odds API credits (up to ~80 for a full slate). The one place
+        a request handler is allowed to trigger a live odds fetch - it only
+        ever runs from the user pressing the button, behind the credit reserve
+        and cooldown in odds_client.refresh_props."""
+        result = odds_client.refresh_props()
+        if not result["ok"]:
+            raise ApiError(
+                result["message"],
+                status=self.PROPS_REFRESH_ERROR_STATUS.get(result["reason"], 502),
+            )
+        return {**result, "status": odds_client.props_status()}
+
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):
         num_legs = _query_int(query, "legs", default=3)
         risk = query.get("risk", ["balanced"])[0]
         position = query.get("position", ["ALL"])[0]
         num_legs = max(2, min(4, num_legs))
+        book = query.get("book", [""])[0]
+        sort_by = query.get("sort", ["probability"])[0]
+        if sort_by not in parlay_engine.SORT_OPTIONS:
+            raise ApiError(f"'sort' must be one of {sorted(parlay_engine.SORT_OPTIONS)}")
 
         data = espn_client.get_projections(SEASON)
         current_week = data["current_week"]
@@ -513,13 +546,44 @@ class Handler(BaseHTTPRequestHandler):
         usage_result = nflverse_client.get_usage(SEASON)
         usage_by_player = usage_result.get("players", {}) if usage_result.get("available") else {}
 
-        legs = parlay_engine.build_legs(
-            data["players"], week, risk=risk, position_filter=position, usage=usage_by_player,
-            schedule=schedule, scoreboard=scoreboard,
-        )
+        book_meta = None
+        if book:
+            # Sportsbook mode: lines and prices come from the chosen book's
+            # cached prop odds (never fetched here - see odds_client's
+            # module docstring), so `risk`, which only tunes the model's own
+            # invented lines, doesn't apply.
+            props = odds_client.get_props()
+            if not props.get("available"):
+                raise ApiError("No sportsbook prop odds are loaded yet - fetch them first.", status=409)
+            book_info = props["books"].get(book)
+            if book_info is None:
+                # Static message on purpose: `book` is raw user input, and
+                # reflecting it into the error is how the earlier XSS sink
+                # in this app's history got started.
+                raise ApiError("That sportsbook has no prop odds loaded.")
+            legs, match_stats = parlay_engine.build_book_legs(
+                data["players"], week, book_info["rows"], props["events"],
+                position_filter=position, usage=usage_by_player,
+                schedule=schedule, scoreboard=scoreboard,
+            )
+            book_meta = {
+                "key": book,
+                "title": book_info["title"],
+                "props_fetched_at": props["fetched_at"],
+                "props_age_hours": round((time.time() - props["fetched_at"]) / 3600, 1),
+                "props_partial": bool(props.get("partial")),
+                "props_total": len(book_info["rows"]),
+                "props_unmatched": match_stats["unmatched"],
+                "props_ambiguous": match_stats["ambiguous"],
+            }
+        else:
+            legs = parlay_engine.build_legs(
+                data["players"], week, risk=risk, position_filter=position, usage=usage_by_player,
+                schedule=schedule, scoreboard=scoreboard,
+            )
         parlays = parlay_engine.build_parlays(
             legs, num_legs=num_legs, schedule=schedule, team_strength=team_strength,
-            market_odds_by_game=_market_odds_by_game(),
+            market_odds_by_game=_market_odds_by_game(), sort_by=sort_by,
         )
         weekly_leg_count = sum(1 for l in legs if l["source"] == "weekly_projection")
 
@@ -539,6 +603,8 @@ class Handler(BaseHTTPRequestHandler):
             "current_week": current_week,
             "week": week,
             "risk": risk,
+            "sort": sort_by,
+            "book": book_meta,
             "position": position,
             "num_legs": num_legs,
             "leg_pool_size": len(legs),

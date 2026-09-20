@@ -59,10 +59,26 @@
         <option value="TE">TE</option>
       </select>
     </label>
+    <label>
+      Odds
+      <select id="book" title="Price the parlays at a real sportsbook's lines and odds instead of this app's own model lines">
+        <option value="">Model (fair odds)</option>
+      </select>
+    </label>
+    <label id="sortWrap" hidden>
+      Sort by
+      <select id="sortBy">
+        <option value="market" selected>Book's implied probability</option>
+        <option value="probability">Model's hit probability</option>
+        <option value="payout">Payout</option>
+      </select>
+    </label>
     <button id="generate">Generate Parlays</button>
     <button id="refreshData" title="Re-fetch projections from ESPN">Refresh Data</button>
     <span id="status"></span>
   </section>
+
+  <div id="bookStatus" class="book-status"></div>
 
   <section id="parlays"></section>
 

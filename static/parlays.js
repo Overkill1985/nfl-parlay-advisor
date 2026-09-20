@@ -3,6 +3,11 @@ const parlaysEl = document.getElementById("parlays");
 const playerTableWrap = document.getElementById("playerTableWrap");
 const playerSearch = document.getElementById("playerSearch");
 const weekSelect = document.getElementById("week");
+const bookSelect = document.getElementById("book");
+const sortSelect = document.getElementById("sortBy");
+const sortWrap = document.getElementById("sortWrap");
+const riskSelect = document.getElementById("risk");
+const bookStatusEl = document.getElementById("bookStatus");
 
 let allPlayers = [];
 let currentWeek = 1;
@@ -23,10 +28,14 @@ function fmtLeg(leg) {
   const sourceBadge = leg.source === "weekly_projection"
     ? `<span class="badge badge-live" title="ESPN has published a real projection for this player for this specific week">live wk proj</span>`
     : `<span class="badge" title="No weekly projection published yet for this player/week — estimated from season projection ÷ 17">season-pace est.</span>`;
+  const price = leg.book_price != null ? ` @ ${fmtOdds(leg.book_price)}` : "";
+  const bookLine = leg.book_price != null
+    ? `<span class="leg-book" title="The model is a season-pace average with no matchup information, so a gap here mostly shows what it doesn't know - not that the sportsbook is wrong.">book implies ${fmtPct(leg.implied_probability, 0)} · model says ${fmtPct(leg.probability, 0)}</span>`
+    : "";
   if (leg.stat === "anytime_td") {
-    return `${leg.player} (${leg.team} ${leg.position}) — ${leg.label} ${sourceBadge}`;
+    return `${escapeHtml(leg.player)} (${escapeHtml(leg.team)} ${escapeHtml(leg.position)}) — ${escapeHtml(leg.label)}${price} ${sourceBadge}${bookLine}`;
   }
-  return `${leg.player} (${leg.team} ${leg.position}) — ${leg.direction} ${leg.line} ${leg.label} ${sourceBadge}`;
+  return `${escapeHtml(leg.player)} (${escapeHtml(leg.team)} ${escapeHtml(leg.position)}) — ${escapeHtml(leg.direction)} ${leg.line} ${escapeHtml(leg.label)}${price} ${sourceBadge}${bookLine}`;
 }
 
 // Registered by picks.js once it loads; kept optional here so parlays.js has
@@ -45,7 +54,9 @@ function renderParlays(data) {
     return;
   }
   if (!data.parlays.length) {
-    if (data.leg_pool_size === 0 && data.week_all_completed) {
+    if (data.book && data.leg_pool_size === 0) {
+      parlaysEl.innerHTML = `<p>No ${escapeHtml(data.book.title)} props matched this week's remaining games (${data.book.props_total} props loaded, ${data.book.props_unmatched} couldn't be matched to a player). Prop odds are fetched a few days before kickoff - try refreshing them, or pick another sportsbook.</p>`;
+    } else if (data.leg_pool_size === 0 && data.week_all_completed) {
       parlaysEl.innerHTML = `<p>All of Week ${data.week}'s games have finished — nothing left to build a parlay from. Check back once Week ${data.week + 1} begins.</p>`;
     } else {
       parlaysEl.innerHTML = `<p>No parlays matched these filters (leg pool: ${data.leg_pool_size}). Try a different risk level or position.</p>`;
@@ -77,6 +88,10 @@ function renderParlays(data) {
       <div class="warning-line warning-${w.severity}">${escapeHtml(w.message)}</div>
     `).join("");
 
+    const sameGameNote = p.same_game
+      ? `<div class="warning-line warning-caution">Same-game legs: sportsbooks reprice these because they're correlated, so a real slip will likely pay less than the multiplied price shown.</div>`
+      : "";
+
     const scriptLines = (p.game_script || []).map(g => `
       <div class="game-script-line">${escapeHtml(g.summary)}</div>
     `).join("");
@@ -85,10 +100,15 @@ function renderParlays(data) {
       <div class="parlay-card">
         <div class="parlay-card__header">
           <div>#${i + 1} &middot; ${p.legs.length}-leg parlay ${corrBadge}</div>
-          <div class="parlay-card__odds">Fair odds: ${p.estimated_decimal_odds}x (${p.estimated_american_odds > 0 ? "+" : ""}${p.estimated_american_odds})</div>
+          <div class="parlay-card__odds">${p.book_decimal_odds != null
+            ? `${escapeHtml(data.book.title)} pays: ${p.book_decimal_odds}x (${fmtOdds(p.book_american_odds)}) <span class="leg-book">model's fair price: ${p.estimated_decimal_odds}x (${fmtOdds(p.estimated_american_odds)})</span>`
+            : `Fair odds: ${p.estimated_decimal_odds}x (${fmtOdds(p.estimated_american_odds)})`}</div>
         </div>
-        <div class="parlay-card__prob">Estimated combined hit probability: ${(p.combined_probability * 100).toFixed(1)}% &middot; risk score ${p.risk_score}/100</div>
+        <div class="parlay-card__prob">${p.book_implied_probability != null
+          ? `${escapeHtml(data.book.title)}'s prices imply ${(p.book_implied_probability * 100).toFixed(1)}% to hit &middot; this app's model says ${(p.combined_probability * 100).toFixed(1)}% &middot; risk score ${p.risk_score}/100`
+          : `Estimated combined hit probability: ${(p.combined_probability * 100).toFixed(1)}% &middot; risk score ${p.risk_score}/100`}</div>
         ${legRows}
+        ${sameGameNote}
         ${warningLines}
         ${scriptLines}
       </div>
@@ -102,12 +122,16 @@ function renderParlays(data) {
     ? ` &middot; ${data.games_remaining} game${data.games_remaining === 1 ? "" : "s"} left to play this week (finished games are excluded)`
     : "";
 
-  parlaysEl.innerHTML = `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}</p>` + cards;
+  const bookNote = data.book
+    ? `<p style="color:var(--muted); font-size:0.85rem">Priced at <strong>${escapeHtml(data.book.title)}</strong>'s real lines and odds &middot; ${data.book.props_total - data.book.props_unmatched - data.book.props_ambiguous} of ${data.book.props_total} props matched to a player &middot; prop odds fetched ${data.book.props_age_hours}h ago${data.book.props_partial ? " (partial - some games failed to load)" : ""}. Risk level doesn't apply here: the book sets the lines. The model behind the hit probabilities is a season-pace average with no matchup, weather or injury-news information, so treat this as a way to build a slip at real prices, not as a betting edge.</p>`
+    : "";
+
+  parlaysEl.innerHTML = bookNote + `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}</p>` + cards;
 
   parlaysEl.querySelectorAll(".track-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       const leg = window._lastLegsById[btn.dataset.legKey];
-      if (leg) trackLeg({ ...leg, week: Number(weekSelect.value || currentWeek) });
+      if (leg) trackLeg({ ...leg, week: Number(weekSelect.value || currentWeek), sportsbook: data.book ? data.book.title : "" });
     });
   });
 }
@@ -117,11 +141,13 @@ async function generateParlays() {
   const risk = document.getElementById("risk").value;
   const position = document.getElementById("position").value;
   const week = weekSelect.value || currentWeek;
+  const book = bookSelect.value;
+  const sort = sortSelect.value;
 
   statusEl.textContent = "Generating...";
   parlaysEl.innerHTML = "";
   try {
-    const res = await fetch(`/api/parlays?legs=${legs}&risk=${risk}&position=${position}&week=${week}`);
+    const res = await fetch(`/api/parlays?legs=${legs}&risk=${risk}&position=${position}&week=${week}&book=${encodeURIComponent(book)}&sort=${sort}`);
     const data = await res.json();
     if (data.current_week) populateWeekSelect(data.current_week);
     renderParlays(data);
@@ -183,6 +209,99 @@ playerSearch.addEventListener("input", () => {
   renderPlayerTable(allPlayers.filter(p => p.name.toLowerCase().includes(q)));
 });
 
+// -- sportsbook odds ------------------------------------------------------
+//
+// Prop odds cost Odds API credits to fetch (one fetch covers every book), so
+// nothing here fetches on load or on a timer - only the button below, and only
+// after a second confirming click that states the cost.
+
+let booksStatus = null;
+let fetchConfirmTimer = null;
+
+function syncBookControls() {
+  const inBookMode = Boolean(bookSelect.value);
+  sortWrap.hidden = !inBookMode;
+  riskSelect.disabled = inBookMode;
+  riskSelect.title = inBookMode
+    ? "Risk level tunes this app's own model lines - with a sportsbook selected, the book sets the lines"
+    : "";
+}
+
+function renderBookStatus() {
+  const s = booksStatus;
+  if (!s) {
+    bookStatusEl.innerHTML = "";
+    return;
+  }
+  if (!s.api_key_configured) {
+    bookStatusEl.innerHTML = `<span>Sportsbook odds need an <code>ODDS_API_KEY</code> environment variable (free key from the-odds-api.com).</span>`;
+    return;
+  }
+  const credits = s.credits_remaining != null
+    ? `${s.credits_remaining} Odds API credits left`
+    : "Odds API credit balance not known yet";
+  const freshness = s.available
+    ? `Prop odds fetched ${s.age_hours}h ago · ${s.books.length} sportsbooks · ${s.upcoming_events} upcoming game${s.upcoming_events === 1 ? "" : "s"}${s.partial ? " · partial" : ""}`
+    : "No sportsbook prop odds loaded yet";
+  const label = s.available ? "Refresh prop odds" : "Fetch prop odds";
+  bookStatusEl.innerHTML = `
+    <span>${escapeHtml(freshness)} · ${escapeHtml(credits)}</span>
+    <button id="fetchProps" title="One fetch covers every sportsbook, so switching books afterwards is free">${label} (up to ${s.max_refresh_cost} credits)</button>
+    <span id="fetchPropsMsg"></span>`;
+  document.getElementById("fetchProps").addEventListener("click", onFetchPropsClick);
+}
+
+async function loadBooks() {
+  try {
+    booksStatus = await apiGet("/api/odds/books");
+  } catch (err) {
+    booksStatus = null;
+  }
+  const previous = bookSelect.value;
+  const books = booksStatus ? booksStatus.books : [];
+  bookSelect.innerHTML = `<option value="">Model (fair odds)</option>` +
+    books.map(b => `<option value="${escapeHtml(b.key)}">${escapeHtml(b.title)}</option>`).join("");
+  bookSelect.value = books.some(b => b.key === previous) ? previous : "";
+  syncBookControls();
+  renderBookStatus();
+}
+
+function onFetchPropsClick() {
+  const btn = document.getElementById("fetchProps");
+  if (btn.dataset.confirming !== "1") {
+    btn.dataset.confirming = "1";
+    btn.textContent = `Click again to spend up to ${booksStatus.max_refresh_cost} credits`;
+    fetchConfirmTimer = setTimeout(renderBookStatus, 6000);
+    return;
+  }
+  clearTimeout(fetchConfirmTimer);
+  fetchProps();
+}
+
+async function fetchProps() {
+  const btn = document.getElementById("fetchProps");
+  const msg = document.getElementById("fetchPropsMsg");
+  btn.disabled = true;
+  msg.textContent = "Fetching from The Odds API (about 15 seconds)...";
+  try {
+    const result = await apiPost("/api/odds/props/refresh");
+    await loadBooks();
+    const note = result.trimmed ? " (fetched the soonest games your remaining credits allowed)" : "";
+    document.getElementById("fetchPropsMsg").textContent =
+      `Loaded ${result.events_fetched} game${result.events_fetched === 1 ? "" : "s"} from ${result.books.length} sportsbooks${note}.`;
+    if (bookSelect.value) await generateParlays();
+  } catch (err) {
+    msg.textContent = err.message;
+    btn.disabled = false;
+  }
+}
+
+bookSelect.addEventListener("change", () => {
+  syncBookControls();
+  generateParlays();
+});
+sortSelect.addEventListener("change", generateParlays);
+
 document.getElementById("generate").addEventListener("click", generateParlays);
 weekSelect.addEventListener("change", generateParlays);
 document.getElementById("refreshData").addEventListener("click", async () => {
@@ -191,4 +310,5 @@ document.getElementById("refreshData").addEventListener("click", async () => {
 });
 
 populateWeekSelect(1);
+loadBooks();
 loadProjections().then(generateParlays);

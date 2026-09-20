@@ -33,7 +33,11 @@ from nflverse, real final scores for grading, and (optionally) real market odds.
 - **Real market odds** ([`odds_client.py`](odds_client.py), optional): real consensus
   moneylines/spreads/totals from [The Odds API](https://the-odds-api.com/) (free tier,
   requires your own API key via the `ODDS_API_KEY` env var - see "Running it" below).
-  Without a key, this simply doesn't run; nothing else in the app depends on it.
+  Without a key, this simply doesn't run; nothing else in the app depends on it. The same
+  key also powers the **sportsbook selector** on the Parlays tab: real player-prop lines
+  and prices from FanDuel, DraftKings, BetMGM, BetRivers, BetOnline and Bovada. Fetching
+  those props costs API credits (about 75 for a full week's slate, against 500/month on
+  the free tier), so it only happens when you press the button - never automatically.
 - **Weekly vs. season-pace**: ESPN doesn't publish real per-week projections until a
   few days before that week's games. Until then, legs fall back to *season projection ÷
   17* as a per-game estimate (with wider assumed variance). Every leg is tagged with
@@ -113,8 +117,18 @@ mapping, not the app.
 - **Week**: defaults to ESPN's current week.
 - **Legs**: 2, 3, or 4-leg parlays. **Risk**: Safe / Balanced / Boom, trading hit
   probability for payout. **Position**: filter to one position or leave on All.
+- **Odds**: leave on "Model" for the app's own lines and fair odds, or pick a sportsbook
+  to build parlays from *that book's* real lines and prices, showing what the book would
+  actually pay. Press **Fetch prop odds** first (it asks you to click twice, since it
+  spends API credits; one fetch covers every book, so switching books afterwards is
+  free). With a book selected, Risk is disabled (the book sets the lines) and a **Sort
+  by** control appears - the book's implied probability by default, since the model's
+  own probabilities often disagree sharply with a real book's.
 - Each parlay shows correlation warnings, a game-script summary, and a risk score.
-- **Track**: carries a leg's player/stat/line/probability into the My Picks form.
+  Same-game legs are flagged, because sportsbooks reprice those and the real payout is
+  usually lower than the multiplied price.
+- **Track**: carries a leg's player/stat/line/probability into the My Picks form - and,
+  for a sportsbook-priced leg, the book's actual odds and name.
 - **Browse Season Projections**: a searchable table of ESPN's full projections.
 
 **My Picks tab** - track real sportsbook odds:
@@ -150,7 +164,7 @@ mapping, not the app.
 espn_client.py     ESPN API client (projections, schedule, injuries, scores)
 nflverse_client.py Real usage data (snap %, target share, WOPR) + official injury reports
 injury_report.py   Thu/Sun ET refresh schedule + two-source injury merge
-odds_client.py     Real market odds (moneyline/spread/total) from The Odds API
+odds_client.py     Real market odds (moneyline/spread/total) + per-sportsbook player props
 parlay_engine.py   Prop-leg generation, probability model, parlay combination logic
 odds_math.py       Odds conversions, payout, expected value, risk score
 correlation.py     Correlation warnings + game-script summaries

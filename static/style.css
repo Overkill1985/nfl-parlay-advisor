@@ -331,3 +331,23 @@ th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background
   border-left-color: var(--accent);
   font-style: italic;
 }
+
+/* Sportsbook odds selector (Parlays tab) */
+.book-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.25rem 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.leg-book {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

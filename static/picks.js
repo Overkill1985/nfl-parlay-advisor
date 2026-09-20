@@ -21,6 +21,10 @@ function prefillPickForm(leg) {
   form.model_line.value = leg.line ?? "";
   form.model_probability.value = leg.probability ?? "";
   form.stat_hidden = leg.stat || "";
+  // A leg priced from a real sportsbook carries that book's actual price, so
+  // it's filled in rather than left for retyping (the odds field is required).
+  if (leg.book_price != null) form.odds_american.value = leg.book_price;
+  if (leg.sportsbook) form.sportsbook.value = leg.sportsbook;
   pickFormStatus.textContent = `Prefilled from model leg: ${leg.player || ""}`;
 }
 window.prefillPickForm = prefillPickForm;
