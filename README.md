@@ -142,6 +142,12 @@ mapping, not the app.
   free). With a book selected, Risk is disabled (the book sets the lines) and a **Sort
   by** control appears - the book's implied probability by default, since the model's
   own probabilities often disagree sharply with a real book's.
+- **Spread across games**: the parlays shown are chosen so they cover many games
+  instead of all leaning on the same few. Ranked purely by hit probability, one game
+  (and even one single leg) used to appear in all 10 parlays and only ~5 of a week's 13+
+  games were represented; now no leg or game is reused more than a few times, and the
+  summary line says how many games the list spans. The best parlay is still first, and the
+  cost is a slightly lower average hit probability across the list.
 - **Injuries**: players ESPN lists as out, on injured reserve or suspended are left out
   of the pool entirely (the page says who), while doubtful/questionable players stay
   with a badge on each leg - hover it for ESPN's latest note. Uses ESPN's live injury

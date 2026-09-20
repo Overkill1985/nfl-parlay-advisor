@@ -380,8 +380,90 @@ def _parlay_sort_key(parlay, sort_by):
     return parlay["combined_probability"]
 
 
+def leg_game_key(leg, schedule):
+    """Identifies the game a leg belongs to: the frozenset of its team and that
+    week's opponent (so both sides' legs share a key). Falls back to the team
+    alone when the schedule doesn't have the game - still groups same-team legs."""
+    opponent = ((schedule or {}).get("weeks", {}).get(str(leg.get("week")), {})
+                .get(leg["team"], {}).get("opponent"))
+    return frozenset((leg["team"], opponent)) if opponent else frozenset((leg["team"],))
+
+
+def _select_spread(ranked, top_n, schedule):
+    """Picks `top_n` parlays from `ranked` (already best-first) so they don't
+    all lean on the same few legs and games.
+
+    Without this, taking the top N of a probability-ranked list is badly
+    clustered: measured on a real week, one game appeared in all 10 parlays,
+    one single leg appeared in all 10, and 10 parlays drew from only 5 of 13
+    available games - because the strongest legs win almost every combination
+    they're in.
+
+    Two limits, both counted per chosen parlay (a game counts once per parlay
+    however many of its legs are in it): no leg (player + stat) may appear in
+    more than `leg_cap` parlays, and no game in more than `game_cap`. Parlays
+    are taken strictly in rank order, so the best one is always first.
+
+    Spreading across GAMES is the point, so it takes priority: `game_cap` is
+    made as tight as it can be, and only then is `leg_cap` made as tight as
+    that allows - but a single leg is never allowed more than about a third of
+    the list (`leg_ceiling`) just to keep games tight. If that ceiling makes the
+    list unfillable, games loosen instead.
+
+    - `game_cap` starts at a floor that isn't arbitrary: 10 parlays of 3 legs
+      need ~30 game-uses in total, so over 13 games some game is used at least
+      3 times no matter what. With only a few games to draw from (sportsbook
+      mode can have props for just two) the floor rises with it - a parlay with
+      legs in both of two games uses EACH game once, so 10 of them use each game
+      10 times. Starting below that floor would demand the impossible.
+    - The two limits are searched independently, never as one shared number: a
+      shared cap had to rise to ~10 to satisfy a two-game pool's game limit and
+      dragged single legs to 10 reuses while 16 others sat unused.
+    """
+    if len(ranked) <= top_n:
+        return ranked
+
+    footprints = [
+        ({(leg["player_id"], leg["stat"]) for leg in parlay["legs"]},
+         {leg_game_key(leg, schedule) for leg in parlay["legs"]})
+        for parlay in ranked
+    ]
+    games_available = len(set().union(*(games for _, games in footprints)))
+    legs_per_parlay = len(ranked[0]["legs"])
+    game_floor = -(-top_n * min(legs_per_parlay, games_available) // games_available)  # ceil
+
+    def attempt(leg_cap, game_cap):
+        chosen = []
+        leg_uses, game_uses = {}, {}
+        for parlay, (leg_ids, games) in zip(ranked, footprints):
+            if all(leg_uses.get(x, 0) < leg_cap for x in leg_ids) and all(game_uses.get(g, 0) < game_cap for g in games):
+                chosen.append(parlay)
+                for x in leg_ids:
+                    leg_uses[x] = leg_uses.get(x, 0) + 1
+                for g in games:
+                    game_uses[g] = game_uses.get(g, 0) + 1
+                if len(chosen) == top_n:
+                    return chosen
+        return None
+
+    leg_ceiling = -(-top_n // 3)  # ceil: no leg in more than ~a third of the list
+    for game_cap in range(game_floor, top_n + 1):
+        for leg_cap in range(1, leg_ceiling + 1):
+            chosen = attempt(leg_cap, game_cap)
+            if chosen:
+                return chosen
+    # Not even with games unconstrained can the list be filled under the leg
+    # ceiling (a very small pool) - let legs repeat rather than return a short list.
+    for leg_cap in range(leg_ceiling + 1, top_n + 1):
+        chosen = attempt(leg_cap, top_n)
+        if chosen:
+            return chosen
+    return ranked[:top_n]  # unreachable: a limit of top_n never blocks anything
+
+
 def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinct_categories=True,
-                   schedule=None, team_strength=None, market_odds_by_game=None, sort_by="probability"):
+                   schedule=None, team_strength=None, market_odds_by_game=None, sort_by="probability",
+                   spread_games=True):
     """`sort_by` is one of SORT_OPTIONS. With sportsbook-priced legs (see
     build_book_legs) "payout" orders by what the book actually pays, and
     "market" by how likely the book's own prices say the parlay is (the
@@ -392,7 +474,11 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
 
     There is deliberately no "expected value" sort: this model's probabilities
     are season-pace averages with no matchup information, so ranking by EV
-    against a real book would just surface wherever the model is most wrong."""
+    against a real book would just surface wherever the model is most wrong.
+
+    `spread_games` (default on) chooses the `top_n` so they cover many games
+    instead of all leaning on the same few - see _select_spread. The list is
+    still ordered by `sort_by`; turn it off to get the plain top N."""
     pool = legs[:candidate_pool]
     best = []
 
@@ -458,6 +544,7 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
         # Fall back to allowing repeated categories rather than showing nothing.
         return build_parlays(legs, num_legs, candidate_pool, top_n, require_distinct_categories=False,
                               schedule=schedule, team_strength=team_strength,
-                              market_odds_by_game=market_odds_by_game, sort_by=sort_by)
+                              market_odds_by_game=market_odds_by_game, sort_by=sort_by,
+                              spread_games=spread_games)
 
-    return best[:top_n]
+    return _select_spread(best, top_n, schedule) if spread_games else best[:top_n]

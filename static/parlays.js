@@ -128,7 +128,7 @@ function renderParlays(data) {
     : "";
 
   const bookNote = data.book
-    ? `<p style="color:var(--muted); font-size:0.85rem">Priced at <strong>${escapeHtml(data.book.title)}</strong>'s real lines and odds &middot; ${data.book.props_total - data.book.props_unmatched - data.book.props_ambiguous} of ${data.book.props_total} props matched to a player &middot; prop odds fetched ${data.book.props_age_hours}h ago${data.book.props_partial ? " (partial - some games failed to load)" : ""}. Risk level doesn't apply here: the book sets the lines. The model behind the hit probabilities is a season-pace average with no matchup information (injuries only remove players who are out, and weather only adds warnings - neither changes a probability), so treat this as a way to build a slip at real prices, not as a betting edge.</p>`
+    ? `<p style="color:var(--muted); font-size:0.85rem">Priced at <strong>${escapeHtml(data.book.title)}</strong>'s real lines and odds &middot; ${data.book.props_total - data.book.props_unmatched - data.book.props_ambiguous} of ${data.book.props_total} props matched to a player &middot; prop odds cover ${data.book.props_games} game${data.book.props_games === 1 ? "" : "s"}${data.games_remaining != null && data.book.props_games < data.games_remaining ? ` of the ${data.games_remaining} still to play (use Refresh prop odds above to load the rest)` : ""}, fetched ${data.book.props_age_hours}h ago${data.book.props_partial ? " (partial - some games failed to load)" : ""}. Risk level doesn't apply here: the book sets the lines. The model behind the hit probabilities is a season-pace average with no matchup information (injuries only remove players who are out, and weather only adds warnings - neither changes a probability), so treat this as a way to build a slip at real prices, not as a betting edge.</p>`
     : "";
 
   const excluded = data.injury_excluded || [];
@@ -136,7 +136,7 @@ function renderParlays(data) {
     ? `<p style="color:var(--muted); font-size:0.85rem" title="${escapeHtml(excluded.map(x => `${x.name} (${x.team}, ${x.status})`).join(", "))}">${excluded.length} player${excluded.length === 1 ? "" : "s"} ruled out (out / injured reserve / suspended) ${excluded.length === 1 ? "is" : "are"} left out of the pool: ${escapeHtml(excluded.slice(0, 6).map(x => `${x.name} (${x.status})`).join(", "))}${excluded.length > 6 ? `, and ${excluded.length - 6} more` : ""}.</p>`
     : "";
 
-  parlaysEl.innerHTML = bookNote + injuryNote + `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}</p>` + cards;
+  parlaysEl.innerHTML = bookNote + injuryNote + `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}${data.games_in_parlays ? ` spread across ${data.games_in_parlays} game${data.games_in_parlays === 1 ? "" : "s"}` : ""}</p>` + cards;
 
   parlaysEl.querySelectorAll(".track-btn").forEach(btn => {
     btn.addEventListener("click", () => {

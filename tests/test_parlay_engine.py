@@ -417,5 +417,129 @@ class TestInjuryFilter(unittest.TestCase):
         self.assertNotIn("injury_status", next(l for l in flagged if l["team"] == "DEN"))
 
 
+STATS = ["pass_yds", "rush_yds", "rec_yds", "receptions"]
+
+
+def spread_fixture(num_games=6):
+    """`num_games` games (teams T0/T1, T2/T3, ...), one leg per team with
+    probabilities falling team by team - so the strongest legs, and therefore
+    the plain top N, all sit in the first game or two."""
+    teams = [f"T{i}" for i in range(num_games * 2)]
+    week = {}
+    for i in range(0, len(teams), 2):
+        a, b = teams[i], teams[i + 1]
+        week[a] = {"opponent": b, "is_home": True}
+        week[b] = {"opponent": a, "is_home": False}
+    legs = [make_leg(i, t, STATS[i % 4], 0.95 - 0.03 * i, -110) for i, t in enumerate(teams)]
+    return legs, {"weeks": {"1": week}}
+
+
+def games_used(parlays, schedule):
+    from collections import Counter
+    return Counter(g for p in parlays for g in {parlay_engine.leg_game_key(l, schedule) for l in p["legs"]})
+
+
+def legs_used(parlays):
+    from collections import Counter
+    return Counter((l["player_id"], l["stat"]) for p in parlays for l in p["legs"])
+
+
+class TestLegGameKey(unittest.TestCase):
+    SCHEDULE = {"weeks": {"1": {"KC": {"opponent": "DEN"}, "DEN": {"opponent": "KC"}}}}
+
+    def test_both_sides_of_a_game_share_a_key(self):
+        kc = parlay_engine.leg_game_key({"team": "KC", "week": 1}, self.SCHEDULE)
+        den = parlay_engine.leg_game_key({"team": "DEN", "week": 1}, self.SCHEDULE)
+        self.assertEqual(kc, den)
+        self.assertEqual(kc, frozenset({"KC", "DEN"}))
+
+    def test_falls_back_to_the_team_when_the_schedule_lacks_the_game(self):
+        self.assertEqual(parlay_engine.leg_game_key({"team": "BUF", "week": 1}, self.SCHEDULE), frozenset({"BUF"}))
+        self.assertEqual(parlay_engine.leg_game_key({"team": "KC", "week": 9}, self.SCHEDULE), frozenset({"KC"}))
+        self.assertEqual(parlay_engine.leg_game_key({"team": "KC", "week": 1}, None), frozenset({"KC"}))
+
+
+class TestSpreadGames(unittest.TestCase):
+    def setUp(self):
+        self.legs, self.schedule = spread_fixture(6)
+
+    def _parlays(self, **kw):
+        return parlay_engine.build_parlays(self.legs, num_legs=2, schedule=self.schedule, **kw)
+
+    def test_the_plain_top_n_really_is_clustered_and_spreading_fixes_it(self):
+        plain = self._parlays(spread_games=False)
+        spread = self._parlays()
+        self.assertEqual(len(plain), 10)
+        self.assertEqual(len(spread), 10)
+        self.assertGreater(len(games_used(spread, self.schedule)), len(games_used(plain, self.schedule)))
+        self.assertLess(max(legs_used(spread).values()), max(legs_used(plain).values()))
+        self.assertLess(max(games_used(spread, self.schedule).values()),
+                        max(games_used(plain, self.schedule).values()))
+
+    def test_the_single_best_parlay_is_still_first(self):
+        self.assertEqual(self._parlays()[0]["legs"], self._parlays(spread_games=False)[0]["legs"])
+
+    def test_results_stay_ordered_by_the_chosen_sort(self):
+        probs = [p["combined_probability"] for p in self._parlays()]
+        self.assertEqual(probs, sorted(probs, reverse=True))
+        payouts = [p["book_decimal_odds"] for p in self._parlays(sort_by="payout")]
+        self.assertEqual(payouts, sorted(payouts, reverse=True))
+
+    def test_spreading_off_gives_the_plain_top_n(self):
+        plain = self._parlays(spread_games=False)
+        probs = [p["combined_probability"] for p in plain]
+        self.assertEqual(probs, sorted(probs, reverse=True))
+
+    def test_no_parlay_is_invented_or_duplicated(self):
+        spread = self._parlays()
+        keys = [tuple(sorted((l["player_id"], l["stat"]) for l in p["legs"])) for p in spread]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_a_pool_with_only_two_games_still_fills_the_list_without_overusing_a_leg(self):
+        # Sportsbook mode can have props for just a couple of games, so games
+        # must be reused heavily - that must NOT drag single legs along with it.
+        # The shape here is the real pool that exposed this: two games, and the
+        # scarce prop types (1 anytime-TD leg, 2 passing legs) are also the
+        # strongest, so the top-ranked parlays all lean on them. A first version
+        # of the rule reused one leg in all 10 parlays here (8 distinct legs used
+        # of 24) even though 16 could be shared.
+        teams = ["A", "B", "C", "D"]  # games A/B and C/D
+        schedule = {"weeks": {"1": {tm: {"opponent": teams[i ^ 1]} for i, tm in enumerate(teams)}}}
+        spec = ([("pass_yds", 0.90), ("pass_yds", 0.89), ("anytime_td", 0.88)]
+                + [(stat, 0.80 - 0.01 * i) for i, stat in enumerate(["rec_yds", "receptions"] * 8)]
+                + [("rush_yds", 0.60 - 0.01 * i) for i in range(5)])
+        legs = [make_leg(100 + i, teams[i % 4], stat, prob, -110) for i, (stat, prob) in enumerate(spec)]
+        self.assertEqual(len({parlay_engine.leg_game_key(l, schedule) for l in legs}), 2)
+
+        parlays = parlay_engine.build_parlays(legs, num_legs=3, schedule=schedule)
+        self.assertEqual(len(parlays), 10)
+        self.assertEqual(len(games_used(parlays, schedule)), 2)
+        # A parlay with legs in both games uses EACH game once, so a game can
+        # legitimately be in nearly every parlay here.
+        self.assertLessEqual(max(legs_used(parlays).values()), 3)
+        self.assertGreaterEqual(len(legs_used(parlays)), 14)
+
+    def test_fewer_candidates_than_top_n_are_all_returned(self):
+        legs, schedule = spread_fixture(2)  # 4 legs -> a handful of 2-leg combos
+        parlays = parlay_engine.build_parlays(legs, num_legs=2, schedule=schedule)
+        self.assertLess(len(parlays), 10)
+        self.assertEqual(len(parlays), len(parlay_engine.build_parlays(legs, num_legs=2, schedule=schedule,
+                                                                        spread_games=False)))
+
+    def test_works_without_a_schedule_by_spreading_across_teams(self):
+        legs, _ = spread_fixture(6)
+        spread = parlay_engine.build_parlays(legs, num_legs=2)
+        plain = parlay_engine.build_parlays(legs, num_legs=2, spread_games=False)
+        self.assertEqual(len(spread), 10)
+        self.assertLess(max(legs_used(spread).values()), max(legs_used(plain).values()))
+
+    def test_a_game_counts_once_per_parlay_however_many_legs_it_has(self):
+        # Both legs of this parlay are in the same game; that's one use of it.
+        schedule = {"weeks": {"1": {"A": {"opponent": "B"}, "B": {"opponent": "A"}}}}
+        legs = [make_leg(1, "A", "pass_yds", 0.9, -110), make_leg(2, "B", "rush_yds", 0.9, -110)]
+        parlays = parlay_engine.build_parlays(legs, num_legs=2, schedule=schedule)
+        self.assertEqual(sum(games_used(parlays, schedule).values()), len(parlays))
+
+
 if __name__ == "__main__":
     unittest.main()

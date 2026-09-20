@@ -102,6 +102,36 @@ silently miss on any cache hit (this bit the app once already: see git history a
   normalizes team names to ESPN's abbreviation dialect at its own boundary - nothing
   downstream (`correlation.py` etc.) should ever see a non-ESPN abbreviation.
 
+### Parlay selection: spread across games (`_select_spread`)
+
+`build_parlays` ranks every valid combination, then `_select_spread` picks the `top_n`
+(default on; `spread_games=False` gives the plain top N). The plain top N was badly
+clustered - measured on a real week, one game and one single leg each appeared in *all*
+10 parlays and only 5 of 13 available games were covered, because the strongest legs win
+nearly every combination they're in.
+
+Two limits, both counted per chosen parlay (a game counts once per parlay however many of
+its legs it holds): no leg (player+stat) in more than `leg_cap` parlays, no game in more
+than `game_cap`. Parlays are taken strictly in rank order, so the best is always first and
+`sort_by` still governs the ordering. Both limits start as tight as possible and loosen
+only as far as needed to fill the list. Three things here were learned the hard way:
+
+- **`game_cap` has a floor** of `ceil(top_n * min(legs_per_parlay, games) / games)` - the
+  game-uses parlays inherently need (10 parlays x 3 legs over 13 games -> 3). With only a
+  few games (sportsbook mode can have props for just 2) a parlay spanning both games uses
+  *each* game once, so 10 of them use each game 10 times. An earlier floor of
+  `ceil(top_n / games)` assumed one game per parlay and demanded the impossible.
+- **The limits loosen independently, by total slack,** not as one shared cap. A shared cap
+  had to rise to ~10 to satisfy the game limit and dragged single legs to 10 reuses (8
+  distinct legs used of 24) while 16 were available. Few games must never force legs to
+  be reused with them.
+- **The test fixture must look like the real pool.** The bug only appeared when scarce
+  prop types (1 anytime-TD leg, 2 passing legs) were also the strongest, so the top parlays
+  all leaned on them; a fixture with evenly spread prop types passed the broken version.
+
+`games_in_parlays` in the response (and the UI's summary line) reports coverage so it's
+visible, not just trusted.
+
 ### Sportsbook prop odds (the "Odds" dropdown on the Parlays tab)
 
 Picking a sportsbook prices parlays at that book's real lines and odds instead of the

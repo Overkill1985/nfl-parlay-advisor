@@ -652,6 +652,10 @@ class Handler(BaseHTTPRequestHandler):
                 "props_age_hours": round((time.time() - props["fetched_at"]) / 3600, 1),
                 "props_partial": bool(props.get("partial")),
                 "props_total": len(book_info["rows"]),
+                # How many games the loaded prop odds actually cover. A cache
+                # from a small fetch covers only a couple, which silently limits
+                # every book's parlays to those games - so it's shown, not implied.
+                "props_games": sum(1 for e in props["events"].values() if e.get("start_ts", 0) > time.time()),
                 "props_unmatched": match_stats["unmatched"],
                 "props_ambiguous": match_stats["ambiguous"],
             }
@@ -688,6 +692,9 @@ class Handler(BaseHTTPRequestHandler):
             "position": position,
             "num_legs": num_legs,
             "leg_pool_size": len(legs),
+            "games_in_parlays": len({
+                parlay_engine.leg_game_key(leg, schedule) for parlay in parlays for leg in parlay["legs"]
+            }),
             "injury_excluded": _ruled_out_players(data["players"], injuries, schedule, scoreboard, week),
             "games_remaining": games_remaining,
             "week_all_completed": bool(scoreboard.get("available") and scoreboard.get("all_completed")),
