@@ -76,8 +76,28 @@ def _usage_fields(player_usage):
     return fields
 
 
+# A player ESPN says is out for the game can't hit a prop, so he's left out of
+# the pool entirely. Doubtful/questionable players stay (they often do play,
+# and a book will still post their props) but carry a visible warning.
+EXCLUDED_INJURY_STATUSES = {"OUT", "IR", "SUSPENDED"}
+WARN_INJURY_STATUSES = {"DOUBTFUL", "QUESTIONABLE"}
+
+
+def _is_ruled_out(injury):
+    return bool(injury) and injury.get("status") in EXCLUDED_INJURY_STATUSES
+
+
+def _injury_fields(injury):
+    """Warning fields for a doubtful/questionable player's legs; omitted
+    entirely for a healthy player so the frontend can tell "no concern" from
+    "flagged" (same convention as _usage_fields)."""
+    if injury and injury.get("status") in WARN_INJURY_STATUSES:
+        return {"injury_status": injury["status"], "injury_note": injury.get("note")}
+    return {}
+
+
 def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None,
-                schedule=None, scoreboard=None):
+                schedule=None, scoreboard=None, injuries=None):
     """`usage` is optional: nflverse_client.get_usage(season)["players"]
     ({espn_id: {week: {target_share, offense_pct, wopr, ...}}}). When
     supplied, matching legs get target_share/offense_pct/wopr attached as
@@ -96,7 +116,10 @@ def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None
       unfiltered by completion rather than hiding everyone, since a
       transient ESPN scoreboard hiccup shouldn't take down parlay
       generation entirely.
-    Both are opt-in (default None = no filtering) so existing callers and
+    `injuries` ({player_id: {"status", "note"}}, only for players with a
+    non-healthy designation) drops anyone ruled OUT/IR/SUSPENDED and tags
+    doubtful/questionable players' legs with `injury_status`/`injury_note`.
+    All three are opt-in (default None = no filtering) so existing callers and
     tests that don't pass them keep today's behavior."""
     tier_factor = RISK_TIERS.get(risk, RISK_TIERS["balanced"])
     week_map = (schedule or {}).get("weeks", {}).get(str(week)) if schedule else None
@@ -114,6 +137,9 @@ def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None
             continue  # bye week - no game to build a prop for
         if p["team"] in completed_teams:
             continue  # game's over - nothing left to bet on
+        injury = (injuries or {}).get(p["id"])
+        if _is_ruled_out(injury):
+            continue  # not playing - nothing to bet on
 
         per_game, _, source = espn_client.get_week_stats(p, week)
         cv_multiplier = WEEKLY_PROJECTION_CV_MULTIPLIER if source == "weekly_projection" else 1.0
@@ -147,6 +173,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None
                 "source": source,
                 "week": week,
                 **_usage_fields(player_usage),
+                **_injury_fields(injury),
             })
 
         # Anytime TD (rush + rec TDs combined for skill positions, pass TD for QB)
@@ -174,6 +201,7 @@ def build_legs(players, week, risk="balanced", position_filter="ALL", usage=None
                     "source": source,
                     "week": week,
                     **_usage_fields(player_usage),
+                    **_injury_fields(injury),
                 })
 
     return _diversify_by_stat(legs)
@@ -245,7 +273,7 @@ def match_prop_rows(rows, events, players, matchups=None):
 
 
 def build_book_legs(players, week, book_rows, events, position_filter="ALL", usage=None,
-                    schedule=None, scoreboard=None, now_ts=None):
+                    schedule=None, scoreboard=None, now_ts=None, injuries=None):
     """Legs priced by a real sportsbook instead of by this model's own lines.
 
     Where `build_legs` invents a line (mean x risk-tier factor) and reports
@@ -255,7 +283,8 @@ def build_book_legs(players, week, book_rows, events, position_filter="ALL", usa
     (vig included), and `edge` (model probability minus implied).
 
     Read `edge` with suspicion. The model here is a season-pace average
-    with no matchup, weather, or game-script information - books price all of
+    with no matchup or game-script information (injuries only remove players who
+    are out, and weather only adds a warning - neither moves a probability) - books price all of
     that in. A large "edge" against a sharp book usually means the model is
     missing something the book knows, not that the book is wrong.
 
@@ -281,6 +310,9 @@ def build_book_legs(players, week, book_rows, events, position_filter="ALL", usa
         if position_filter != "ALL" and player["position"] != position_filter:
             continue
         if player["team"] in completed_teams:
+            continue
+        injury = (injuries or {}).get(player["id"])
+        if _is_ruled_out(injury):
             continue
 
         stat = odds_client.PROP_MARKETS[row["market"]]
@@ -331,6 +363,7 @@ def build_book_legs(players, week, book_rows, events, position_filter="ALL", usa
             "implied_probability": round(implied, 3),
             "edge": round(prob - implied, 3),
             **_usage_fields((usage or {}).get(player["id"], {}).get(week)),
+            **_injury_fields(injury),
         })
 
     return _diversify_by_stat(legs), stats

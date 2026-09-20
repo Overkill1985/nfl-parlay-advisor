@@ -342,6 +342,11 @@ th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background
   color: var(--muted);
   font-size: 0.85rem;
 }
+.leg-warn {
+  display: block;
+  color: var(--warn);
+  font-size: 0.78rem;
+}
 .leg-book {
   display: block;
   color: var(--muted);

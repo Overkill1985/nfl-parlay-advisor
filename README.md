@@ -68,7 +68,9 @@ from nflverse, real final scores for grading, and (optionally) real market odds.
 - **Weather** ([`weather.py`](weather.py)): a static 32-team stadium/roof reference
   table plus live forecasts from Open-Meteo (free, no API key) for outdoor stadiums.
   Dome/retractable-roof games never hit the network. Forecasts more than ~16 days out
-  are honestly marked unreliable rather than guessed.
+  are honestly marked unreliable rather than guessed. Beyond the Dashboard table, wind,
+  rain and cold show up as cautions on the parlay legs they could affect (see "Parlays
+  tab" below) - a warning only, never a change to a probability.
 - **Storage** ([`storage.py`](storage.py)): a local sqlite database (`data/`,
   gitignored) holding your tracked picks, parlay groups, and the model's own
   leg-generation history (for calibration tracking) - separate from the ESPN response
@@ -140,6 +142,15 @@ mapping, not the app.
   free). With a book selected, Risk is disabled (the book sets the lines) and a **Sort
   by** control appears - the book's implied probability by default, since the model's
   own probabilities often disagree sharply with a real book's.
+- **Injuries**: players ESPN lists as out, on injured reserve or suspended are left out
+  of the pool entirely (the page says who), while doubtful/questionable players stay
+  with a badge on each leg - hover it for ESPN's latest note. Uses ESPN's live injury
+  feed, falling back to the fantasy API's own status.
+- **Weather**: a leg gets a caution when its game's forecast makes it harder - wind or
+  cold for passing and receiving yards, rain or snow for those plus receptions.
+  Rushing yards and touchdowns are never flagged (conditions can push them either way).
+  Domes and games too far out to forecast reliably say nothing. These are heads-up
+  notes only; the hit probabilities are unchanged.
 - Each parlay shows correlation warnings, a game-script summary, and a risk score.
   Same-game legs are flagged, because sportsbooks reprice those and the real payout is
   usually lower than the multiplied price.

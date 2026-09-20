@@ -28,14 +28,19 @@ function fmtLeg(leg) {
   const sourceBadge = leg.source === "weekly_projection"
     ? `<span class="badge badge-live" title="ESPN has published a real projection for this player for this specific week">live wk proj</span>`
     : `<span class="badge" title="No weekly projection published yet for this player/week — estimated from season projection ÷ 17">season-pace est.</span>`;
+  const injuryBadge = leg.injury_status
+    ? ` <span class="badge badge-out" title="${escapeHtml(leg.injury_note || `ESPN lists this player as ${leg.injury_status.toLowerCase()} - check his status before betting`)}">${escapeHtml(leg.injury_status.toLowerCase())}</span>`
+    : "";
+  const weatherNotes = (leg.weather_warnings || [])
+    .map(w => `<span class="leg-warn">Weather: ${escapeHtml(w)}</span>`).join("");
   const price = leg.book_price != null ? ` @ ${fmtOdds(leg.book_price)}` : "";
   const bookLine = leg.book_price != null
     ? `<span class="leg-book" title="The model is a season-pace average with no matchup information, so a gap here mostly shows what it doesn't know - not that the sportsbook is wrong.">book implies ${fmtPct(leg.implied_probability, 0)} · model says ${fmtPct(leg.probability, 0)}</span>`
     : "";
   if (leg.stat === "anytime_td") {
-    return `${escapeHtml(leg.player)} (${escapeHtml(leg.team)} ${escapeHtml(leg.position)}) — ${escapeHtml(leg.label)}${price} ${sourceBadge}${bookLine}`;
+    return `${escapeHtml(leg.player)} (${escapeHtml(leg.team)} ${escapeHtml(leg.position)}) — ${escapeHtml(leg.label)}${price} ${sourceBadge}${injuryBadge}${bookLine}${weatherNotes}`;
   }
-  return `${escapeHtml(leg.player)} (${escapeHtml(leg.team)} ${escapeHtml(leg.position)}) — ${escapeHtml(leg.direction)} ${leg.line} ${escapeHtml(leg.label)}${price} ${sourceBadge}${bookLine}`;
+  return `${escapeHtml(leg.player)} (${escapeHtml(leg.team)} ${escapeHtml(leg.position)}) — ${escapeHtml(leg.direction)} ${leg.line} ${escapeHtml(leg.label)}${price} ${sourceBadge}${injuryBadge}${bookLine}${weatherNotes}`;
 }
 
 // Registered by picks.js once it loads; kept optional here so parlays.js has
@@ -123,10 +128,15 @@ function renderParlays(data) {
     : "";
 
   const bookNote = data.book
-    ? `<p style="color:var(--muted); font-size:0.85rem">Priced at <strong>${escapeHtml(data.book.title)}</strong>'s real lines and odds &middot; ${data.book.props_total - data.book.props_unmatched - data.book.props_ambiguous} of ${data.book.props_total} props matched to a player &middot; prop odds fetched ${data.book.props_age_hours}h ago${data.book.props_partial ? " (partial - some games failed to load)" : ""}. Risk level doesn't apply here: the book sets the lines. The model behind the hit probabilities is a season-pace average with no matchup, weather or injury-news information, so treat this as a way to build a slip at real prices, not as a betting edge.</p>`
+    ? `<p style="color:var(--muted); font-size:0.85rem">Priced at <strong>${escapeHtml(data.book.title)}</strong>'s real lines and odds &middot; ${data.book.props_total - data.book.props_unmatched - data.book.props_ambiguous} of ${data.book.props_total} props matched to a player &middot; prop odds fetched ${data.book.props_age_hours}h ago${data.book.props_partial ? " (partial - some games failed to load)" : ""}. Risk level doesn't apply here: the book sets the lines. The model behind the hit probabilities is a season-pace average with no matchup information (injuries only remove players who are out, and weather only adds warnings - neither changes a probability), so treat this as a way to build a slip at real prices, not as a betting edge.</p>`
     : "";
 
-  parlaysEl.innerHTML = bookNote + `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}</p>` + cards;
+  const excluded = data.injury_excluded || [];
+  const injuryNote = excluded.length
+    ? `<p style="color:var(--muted); font-size:0.85rem" title="${escapeHtml(excluded.map(x => `${x.name} (${x.team}, ${x.status})`).join(", "))}">${excluded.length} player${excluded.length === 1 ? "" : "s"} ruled out (out / injured reserve / suspended) ${excluded.length === 1 ? "is" : "are"} left out of the pool: ${escapeHtml(excluded.slice(0, 6).map(x => `${x.name} (${x.status})`).join(", "))}${excluded.length > 6 ? `, and ${excluded.length - 6} more` : ""}.</p>`
+    : "";
+
+  parlaysEl.innerHTML = bookNote + injuryNote + `<p style="color:var(--muted); font-size:0.85rem">Leg pool size: ${data.leg_pool_size} candidates (${sourceSummary})${gamesNote} &middot; showing top ${data.parlays.length}</p>` + cards;
 
   parlaysEl.querySelectorAll(".track-btn").forEach(btn => {
     btn.addEventListener("click", () => {

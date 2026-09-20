@@ -358,5 +358,64 @@ class TestBuildParlaysBookMode(unittest.TestCase):
         self.assertEqual(payouts, sorted(payouts, reverse=True))
 
 
+class TestInjuryFilter(unittest.TestCase):
+    def setUp(self):
+        self.players = [make_qb(1, "Kansas QB", "KC"), make_qb(2, "Denver QB", "DEN")]
+
+    def _teams(self, legs):
+        return {l["team"] for l in legs}
+
+    def test_players_ruled_out_are_dropped_entirely(self):
+        for status in ("OUT", "IR", "SUSPENDED"):
+            with self.subTest(status=status):
+                legs = parlay_engine.build_legs(self.players, 1, injuries={1: {"status": status, "note": None}})
+                self.assertEqual(self._teams(legs), {"DEN"})
+
+    def test_a_ruled_out_player_loses_every_kind_of_leg(self):
+        # Yardage legs AND the touchdown leg - not just whichever came first.
+        legs = parlay_engine.build_legs(self.players, 1, injuries={1: {"status": "OUT", "note": None}})
+        self.assertFalse([l for l in legs if l["player_id"] == 1])
+        healthy = parlay_engine.build_legs(self.players, 1)
+        self.assertGreater(len([l for l in healthy if l["player_id"] == 1]), 1)
+
+    def test_doubtful_and_questionable_players_stay_but_are_flagged(self):
+        for status in ("DOUBTFUL", "QUESTIONABLE"):
+            with self.subTest(status=status):
+                legs = parlay_engine.build_legs(
+                    self.players, 1, injuries={1: {"status": status, "note": "back tightness"}})
+                kansas = [l for l in legs if l["player_id"] == 1]
+                self.assertTrue(kansas)
+                self.assertTrue(all(l["injury_status"] == status for l in kansas))
+                self.assertTrue(all(l["injury_note"] == "back tightness" for l in kansas))
+                self.assertGreater(len({l["stat"] for l in kansas}), 1)  # flagged on every leg kind
+
+    def test_healthy_players_carry_no_injury_fields(self):
+        legs = parlay_engine.build_legs(self.players, 1, injuries={1: {"status": "OUT", "note": None}})
+        self.assertTrue(all("injury_status" not in l and "injury_note" not in l for l in legs))
+
+    def test_no_injuries_argument_keeps_prior_behavior(self):
+        self.assertEqual(self._teams(parlay_engine.build_legs(self.players, 1)), {"KC", "DEN"})
+        self.assertEqual(self._teams(parlay_engine.build_legs(self.players, 1, injuries={})), {"KC", "DEN"})
+
+    def test_an_injury_entry_for_a_player_not_in_the_pool_is_harmless(self):
+        legs = parlay_engine.build_legs(self.players, 1, injuries={999: {"status": "OUT", "note": None}})
+        self.assertEqual(self._teams(legs), {"KC", "DEN"})
+
+    def test_sportsbook_legs_get_the_same_filter_and_flag(self):
+        events = {"e1": {"home": "KC", "away": "DEN", "commence_time": "x", "start_ts": FUTURE}}
+        rows = [prop_row("player_pass_yds", "Kansas QB", 220.5, -113),
+                prop_row("player_pass_yds", "Denver QB", 220.5, -113)]
+
+        def legs(injuries):
+            return parlay_engine.build_book_legs(self.players, 1, rows, events, now_ts=NOW, injuries=injuries)[0]
+
+        self.assertEqual(self._teams(legs({1: {"status": "OUT", "note": None}})), {"DEN"})
+        flagged = legs({1: {"status": "QUESTIONABLE", "note": "hamstring"}})
+        self.assertEqual({l["team"] for l in flagged}, {"KC", "DEN"})
+        kansas = next(l for l in flagged if l["team"] == "KC")
+        self.assertEqual((kansas["injury_status"], kansas["injury_note"]), ("QUESTIONABLE", "hamstring"))
+        self.assertNotIn("injury_status", next(l for l in flagged if l["team"] == "DEN"))
+
+
 if __name__ == "__main__":
     unittest.main()

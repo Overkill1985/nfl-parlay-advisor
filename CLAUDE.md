@@ -141,6 +141,28 @@ model's invented lines. Data comes from The Odds API's per-event endpoint
 - Parlay payout is each leg's decimal odds multiplied. Books reprice *same-game* legs
   because they're correlated, so those parlays are flagged (`same_game`) as approximate.
 
+### Injuries and weather inside parlays (filter vs. warn)
+
+Both feed `/api/parlays`, but deliberately differently:
+
+- **Injuries filter.** `parlay_engine.build_legs`/`build_book_legs` take an `injuries` map
+  (`server._injury_status_by_player`) and drop OUT/IR/SUSPENDED players from every leg
+  kind (yardage *and* touchdown) - this used to be a real bug: ~39 legs for players who
+  weren't playing sat in the Week 2 pool. DOUBTFUL/QUESTIONABLE stay, tagged with
+  `injury_status`/`injury_note`. The map uses ESPN's live leaguewide feed where it has the
+  player, else the fantasy API's flag (they agreed on all ~290 overlapping players when
+  checked). The background calibration snapshot applies the same filter so it never
+  records a "prediction" for someone who's out.
+- **Weather only warns.** `weather.warnings_for_leg` returns cautions and touches no
+  probability, ranking or exclusion: the size of these effects isn't known here, so
+  inventing an adjustment would be fabricated precision. It's a pure function keyed on
+  stat (`WIND/PRECIP/COLD_AFFECTED_STATS`); rushing and TD legs are deliberately never
+  flagged. `server._attach_weather_warnings` runs only over legs that made it into the
+  returned parlays (a handful of games, not the ~400-leg pool), uses the *home* team's
+  stadium for the forecast, and swallows a failed lookup - weather is a nice-to-have and
+  must never break parlay generation. Domes ("controlled"), unreliable (>~16 days out)
+  and failed forecasts produce nothing: an unknown is not a warning.
+
 ### Injury reporting (two sources, one schedule)
 
 Injuries come from two feeds merged in `injury_report.py`:
@@ -260,7 +282,9 @@ becomes a 400 rather than an uncaught `ValueError`.
   math), so when (a) and (b) disagree it surfaces a caveat rather than reconciling them.
 - `weather.py` - static 32-team stadium/roof table + Open-Meteo forecasts for outdoor
   stadiums only (dome/retractable never hits the network). Forecasts beyond ~16 days
-  out are reported `forecast_reliable: False` rather than guessed.
+  out are reported `forecast_reliable: False` rather than guessed. Its forecasts feed the
+  Dashboard table and, via `warnings_for_leg`, cautions on parlay legs (never a
+  probability change) - see "Injuries and weather inside parlays".
 - `injury_report.py` - the Thursday/Sunday ET refresh schedule and the two-source
   injury merge. See "Injury reporting" above; the hand-rolled US Eastern tzinfo and
   the catch-up (rather than fire-at-time) scheduling are both load-bearing, not

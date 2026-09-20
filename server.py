@@ -101,6 +101,83 @@ def _market_odds_by_game():
     return odds.get("games", {}) if odds.get("available") else {}
 
 
+HEALTHY_INJURY_STATUSES = {"ACTIVE", "UNKNOWN", "PROBABLE"}
+
+
+def _injury_status_by_player(players):
+    """{player_id: {"status", "note"}} for every player carrying a non-healthy
+    designation - what parlay_engine uses to drop players who are out and flag
+    the doubtful/questionable ones.
+
+    ESPN's live leaguewide feed wins where it has the player (it's fresher and
+    covers far more players than the fantasy API's per-player flag); otherwise
+    the fantasy API's own status is used. The two agreed on every one of the
+    ~290 players in both when checked, so which wins rarely matters. Reads the
+    injuries cache - espn_client.get_injuries only touches the network when
+    that cache is stale, and that feed is free."""
+    live = espn_client.get_injuries()
+    live_by_id = live.get("players", {}) if live.get("available") else {}
+    injuries = {}
+    for player in players:
+        entry = live_by_id.get(player["id"])
+        if entry is not None:
+            status, note = entry.get("status"), entry.get("comment")
+        else:
+            status, note = player.get("injury_status"), None
+        if status and status not in HEALTHY_INJURY_STATUSES:
+            injuries[player["id"]] = {"status": status, "note": (note or "")[:300] or None}
+    return injuries
+
+
+def _ruled_out_players(players, injuries, schedule, scoreboard, week):
+    """Who was left out of this week's parlays for being out/IR/suspended -
+    only players whose team still has a game to play, since someone on a bye or
+    whose game already ended wasn't going to appear regardless."""
+    week_map = schedule.get("weeks", {}).get(str(week), {})
+    finished = set()
+    if scoreboard.get("available"):
+        finished = {t for t, g in scoreboard.get("teams", {}).items() if g.get("completed")}
+    left_out = []
+    for player in players:
+        injury = injuries.get(player["id"])
+        if (injury and injury["status"] in parlay_engine.EXCLUDED_INJURY_STATUSES
+                and player["team"] in week_map and player["team"] not in finished):
+            left_out.append({"name": player["name"], "team": player["team"],
+                             "position": player["position"], "status": injury["status"]})
+    return sorted(left_out, key=lambda x: (x["team"], x["name"]))
+
+
+def _attach_weather_warnings(parlays, schedule, week):
+    """Adds `weather_warnings` (a list, possibly empty) to every leg of every
+    parlay. Best-effort: a forecast that can't be fetched just means no warning
+    for that game - it must never break parlay generation.
+
+    Only games that actually appear in the returned parlays are looked up (a
+    handful, not the ~400-leg pool), and each forecast comes from weather.py's
+    own cache. The forecast is for the HOME team's stadium, so a leg on the
+    away team looks up its opponent's."""
+    week_map = schedule.get("weeks", {}).get(str(week), {})
+    forecasts = {}
+
+    def forecast_for(team):
+        info = week_map.get(team)
+        if not info:
+            return None
+        home = team if info["is_home"] else info["opponent"]
+        key = (home, info["game_date"])
+        if key not in forecasts:
+            try:
+                forecasts[key] = weather.get_forecast(home, info["game_date"])
+            except Exception:
+                traceback.print_exc()
+                forecasts[key] = None
+        return forecasts[key]
+
+    for parlay in parlays:
+        for leg in parlay["legs"]:
+            leg["weather_warnings"] = weather.warnings_for_leg(leg["stat"], forecast_for(leg["team"]))
+
+
 def _fetch_scores_for_weeks(weeks):
     """{week: scores_by_team} for whichever of `weeks` ESPN's scoreboard has
     data for - skips (rather than raises past) any week that fails to fetch,
@@ -546,6 +623,8 @@ class Handler(BaseHTTPRequestHandler):
         usage_result = nflverse_client.get_usage(SEASON)
         usage_by_player = usage_result.get("players", {}) if usage_result.get("available") else {}
 
+        injuries = _injury_status_by_player(data["players"])
+
         book_meta = None
         if book:
             # Sportsbook mode: lines and prices come from the chosen book's
@@ -564,7 +643,7 @@ class Handler(BaseHTTPRequestHandler):
             legs, match_stats = parlay_engine.build_book_legs(
                 data["players"], week, book_info["rows"], props["events"],
                 position_filter=position, usage=usage_by_player,
-                schedule=schedule, scoreboard=scoreboard,
+                schedule=schedule, scoreboard=scoreboard, injuries=injuries,
             )
             book_meta = {
                 "key": book,
@@ -579,12 +658,13 @@ class Handler(BaseHTTPRequestHandler):
         else:
             legs = parlay_engine.build_legs(
                 data["players"], week, risk=risk, position_filter=position, usage=usage_by_player,
-                schedule=schedule, scoreboard=scoreboard,
+                schedule=schedule, scoreboard=scoreboard, injuries=injuries,
             )
         parlays = parlay_engine.build_parlays(
             legs, num_legs=num_legs, schedule=schedule, team_strength=team_strength,
             market_odds_by_game=_market_odds_by_game(), sort_by=sort_by,
         )
+        _attach_weather_warnings(parlays, schedule, week)
         weekly_leg_count = sum(1 for l in legs if l["source"] == "weekly_projection")
 
         # So the frontend can tell "your filters are too narrow" apart from
@@ -608,6 +688,7 @@ class Handler(BaseHTTPRequestHandler):
             "position": position,
             "num_legs": num_legs,
             "leg_pool_size": len(legs),
+            "injury_excluded": _ruled_out_players(data["players"], injuries, schedule, scoreboard, week),
             "games_remaining": games_remaining,
             "week_all_completed": bool(scoreboard.get("available") and scoreboard.get("all_completed")),
             "legs_from_weekly_projection": weekly_leg_count,
@@ -868,6 +949,7 @@ def _snapshot_current_week_legs(data, week):
     legs = parlay_engine.build_legs(
         data["players"], week, risk="balanced", position_filter="ALL",
         schedule=schedule, scoreboard=scoreboard,
+        injuries=_injury_status_by_player(data["players"]),
     )
     for leg in legs:
         storage.upsert_model_snapshot(

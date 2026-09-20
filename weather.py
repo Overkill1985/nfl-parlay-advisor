@@ -93,6 +93,41 @@ def _flag_impact(forecast):
     return flags
 
 
+# Which prop stats each condition plausibly hurts. Wind and cold act on the
+# passing game (yards through the air, so QB passing and receiving yards);
+# precipitation also touches catch volume. Rushing yards and touchdowns are
+# deliberately absent - conditions can push them either way, and this app has
+# no evidence for a direction, so it stays silent rather than guess.
+WIND_AFFECTED_STATS = {"pass_yds", "rec_yds"}
+PRECIP_AFFECTED_STATS = {"pass_yds", "rec_yds", "receptions"}
+COLD_AFFECTED_STATS = {"pass_yds", "rec_yds"}
+
+
+def warnings_for_leg(stat, forecast):
+    """Plain-English weather cautions for a single parlay leg, [] if none.
+
+    A caution only - nothing here changes a leg's probability or ranking. The
+    thresholds are the same rough ones `_flag_impact` uses for the Dashboard,
+    and the effect sizes aren't known, so this says "may", never "will".
+
+    Says nothing unless there's a real forecast: not for a dome/retractable
+    roof ("controlled"), not for a game too far out to forecast reliably, and
+    not when the fetch failed - an unknown isn't a warning.
+    """
+    if not forecast or forecast.get("conditions") != "forecast" or not forecast.get("forecast_reliable"):
+        return []
+
+    notes = []
+    wind, precip, temp = forecast.get("wind_mph"), forecast.get("precip_in"), forecast.get("temp_f")
+    if wind is not None and wind >= WIND_MPH_WARNING and stat in WIND_AFFECTED_STATS:
+        notes.append(f"Wind around {wind:.0f} mph may hold down passing and receiving yardage.")
+    if precip is not None and precip >= PRECIP_IN_WARNING and stat in PRECIP_AFFECTED_STATS:
+        notes.append(f"Rain or snow expected ({precip:.2f} in) can cut passing volume and catches.")
+    if temp is not None and temp <= COLD_F_WARNING and stat in COLD_AFFECTED_STATS:
+        notes.append(f"Cold ({temp:.0f}°F) tends to lower passing volume.")
+    return notes
+
+
 def get_forecast(team, game_date_iso, force_refresh=False):
     """Weather info for `team`'s game on `game_date_iso` (ISO datetime string,
     as produced by espn_client.get_schedule). For dome/retractable-roof teams
