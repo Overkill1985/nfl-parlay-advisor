@@ -95,7 +95,21 @@ python server.py
 Then open **http://localhost:8787**.
 
 Optional: set `ODDS_API_KEY` (a free key from [the-odds-api.com](https://the-odds-api.com/))
-to enable real market odds. Everything else works with zero configuration.
+to enable real market odds and the per-sportsbook prop odds on the Parlays tab.
+Everything else works with zero configuration.
+
+The key must be a real environment variable - `python server.py` does **not** read a
+`.env` file (there's no dotenv dependency). On Windows, `setx ODDS_API_KEY "your-key"`
+saves it for future terminals; a terminal that was already open won't see it, so open a
+new one. Docker Compose *does* pick up a `.env` file next to `docker-compose.yml`.
+
+### Running the tests
+
+```
+python -m unittest discover -s tests
+```
+
+Pure-function tests, no network, no API credits spent.
 
 ### Running in Docker
 
@@ -114,7 +128,9 @@ mapping, not the app.
 ## Using the app
 
 **Parlays tab** - generate model-scored parlays:
-- **Week**: defaults to ESPN's current week.
+- **Week**: defaults to ESPN's current week. Only games that haven't finished are
+  used - once a game ends its players drop out of the parlays, and a team on its bye
+  week never appears - so late in a slate you're choosing from what's still to play.
 - **Legs**: 2, 3, or 4-leg parlays. **Risk**: Safe / Balanced / Boom, trading hit
   probability for payout. **Position**: filter to one position or leave on All.
 - **Odds**: leave on "Model" for the app's own lines and fair odds, or pick a sportsbook
@@ -185,17 +201,39 @@ data/              sqlite db + migration backups (gitignored, created at runtime
 
 Every push to `main` or `develop`, and every pull request, automatically:
 
-1. **Builds** the Docker image
-2. **Scans** with [Trivy](https://github.com/aquasecurity/trivy) for vulnerabilities
-3. **Blocks** the build if critical, fixable vulnerabilities are detected
-4. **Comments** on pull requests with scan results
-5. **Uploads** SARIF report to GitHub Security tab
-6. **Pushes** to Docker Hub (on merge to `main` only)
+1. **Runs the unit tests** (on the same Python version the container ships)
+2. **Builds** the Docker image
+3. **Scans** with [Trivy](https://github.com/aquasecurity/trivy) for vulnerabilities
+4. **Blocks** the build if critical, fixable vulnerabilities are detected
+5. **Comments** on pull requests with scan results
+6. **Uploads** SARIF report to GitHub Security tab
+7. **Pushes** to Docker Hub (on merge to `main` only)
 
-Steps 1-5 need **no credentials at all** - Trivy requires no account, so build and scan
+Steps 1-6 need **no credentials at all** - Trivy requires no account, so build and scan
 work on a fresh clone with nothing configured. (This is why the scanner is Trivy rather
 than Docker Scout: Scout requires Docker Hub authentication for every command, so it
-can't scan at all without secrets.) Only step 6, publishing the image, needs secrets.
+can't scan at all without secrets.) Only step 7, publishing the image, needs secrets.
+
+### Keeping it patched
+
+The app has no pip dependencies, so the things that go stale are the CI actions and the
+container's base image:
+
+- **Dependabot** ([`.github/dependabot.yml`](.github/dependabot.yml)) checks the GitHub
+  Actions and the Dockerfile's base image weekly and opens a PR for anything newer.
+- The **Dockerfile runs `apt-get upgrade`** at build time. `python:3.14-slim` is a floating
+  tag that Docker Hub doesn't rebuild the moment Debian ships a fix, so a patched package
+  can sit unpicked-up for days - this closes that gap instead of waiting on the rebuild.
+  (It's what cleared three critical `perl-base` CVEs that failed the scan gate.)
+
+### Security notes
+
+This is a no-login, single-user app, so it's built to be reachable from your own machine
+only: the server binds `127.0.0.1` by default, and rejects any request whose `Host` or
+`Origin` header isn't `localhost` or `127.0.0.1`. That blocks cross-site requests
+and DNS-rebinding attacks from a web page you happen to have open. The consequence: open
+the app at `localhost` or `127.0.0.1`, not your machine's LAN address or hostname (you'll
+get a 403).
 
 ### Setup (optional - only needed to publish images)
 
