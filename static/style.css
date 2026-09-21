@@ -356,3 +356,76 @@ select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Build-your-own parlay (Parlays tab) */
+.builder {
+  max-width: 960px;
+  margin: 1.5rem auto;
+}
+.builder h2 { margin-bottom: 0.25rem; }
+.builder h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.builder-games {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+}
+.game-chip {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+.game-chip.selected {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.game-chip small { display: block; font-weight: 400; opacity: 0.8; }
+.builder-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 760px) { .builder-body { grid-template-columns: 1fr; } }
+.builder-players, .builder-slip {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+.builder-team { margin-bottom: 0.75rem; }
+.builder-team h4 { margin: 0.5rem 0 0.25rem; font-size: 0.85rem; color: var(--muted); }
+.player-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.player-row .player-name { flex: 1 1 10rem; }
+.player-row select { padding: 0.3rem 0.4rem; font-size: 0.8rem; }
+.player-row button { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.slip-leg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.slip-leg .slip-desc { flex: 1 1 10rem; }
+.slip-leg input[type="number"] { width: 5rem; padding: 0.25rem 0.4rem; font: inherit; font-size: 0.8rem;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.slip-leg .remove-btn { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 0.2rem 0.5rem; }
+.builder-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.75rem; }
+.builder-actions label { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 0.3rem; }
+.builder-actions input[type="number"] { width: 6rem; padding: 0.35rem 0.4rem; font: inherit;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }

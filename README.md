@@ -162,6 +162,14 @@ mapping, not the app.
   usually lower than the multiplied price.
 - **Track**: carries a leg's player/stat/line/probability into the My Picks form - and,
   for a sportsbook-priced leg, the book's actual odds and name.
+- **Build Your Own Parlay**: below the generated list. Pick one or more of the week's
+  remaining games, then players and props from them; the slip is scored by the same
+  model and shown as the same card (fair odds, correlation and weather notes, and the
+  book's payout when a sportsbook is selected). Edit any line to see the probability
+  move - a long-shot line is reported at its real low probability, not refused. Players
+  who are out never appear; doubtful/questionable ones are badged. **Save to My Picks**
+  stores the slip as a parlay group, one pick per leg, with the book's odds when you
+  built it at a sportsbook (enter odds by hand otherwise to see the group's EV).
 - **Browse Season Projections**: a searchable table of ESPN's full projections.
 
 **My Picks tab** - track real sportsbook odds:

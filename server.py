@@ -178,6 +178,59 @@ def _attach_weather_warnings(parlays, schedule, week):
             leg["weather_warnings"] = weather.warnings_for_leg(leg["stat"], forecast_for(leg["team"]))
 
 
+MANUAL_PARLAY_MIN_LEGS = 2
+MANUAL_PARLAY_MAX_LEGS = 8
+
+
+def _parlay_context(week):
+    """Everything both the auto and the manual parlay paths need for `week`,
+    fetched once: projections, schedule, scoreboard, injuries, usage, and the
+    sportsbook prop cache. Every call here is a cache read (the background
+    loop keeps them warm); nothing spends Odds API credits."""
+    data = espn_client.get_projections(SEASON)
+    schedule = espn_client.get_schedule(SEASON)
+    scoreboard = espn_client.get_scoreboard(SEASON, week)
+    usage_result = nflverse_client.get_usage(SEASON)
+    return {
+        "data": data,
+        "players_by_id": {p["id"]: p for p in data["players"]},
+        "schedule": schedule,
+        "week_map": schedule.get("weeks", {}).get(str(week), {}),
+        "scoreboard": scoreboard,
+        "finished_teams": (
+            {t for t, g in scoreboard.get("teams", {}).items() if g.get("completed")}
+            if scoreboard.get("available") else set()
+        ),
+        "injuries": _injury_status_by_player(data["players"]),
+        "usage": usage_result.get("players", {}) if usage_result.get("available") else {},
+        "props": odds_client.get_props(),
+    }
+
+
+def _book_rows_by_player(ctx, book, week):
+    """{player_id: {stat: prop_row}} for one sportsbook's cached props,
+    matched to this app's players the same strict way the auto path does.
+    ({}, None) when no book is selected; raises ApiError if the book has no
+    props loaded, so the caller never silently falls back to model lines
+    when the user asked for a book's."""
+    if not book:
+        return {}, None
+    props = ctx["props"]
+    if not props.get("available"):
+        raise ApiError("No sportsbook prop odds are loaded yet - fetch them first.", status=409)
+    info = props["books"].get(book)
+    if info is None:
+        raise ApiError("That sportsbook has no prop odds loaded.")
+    now = time.time()
+    upcoming = {eid: e for eid, e in props["events"].items() if e.get("start_ts", 0) > now}
+    matchups = {team: i["opponent"] for team, i in ctx["week_map"].items()}
+    matched, _ = parlay_engine.match_prop_rows(info["rows"], upcoming, ctx["data"]["players"], matchups)
+    by_player = {}
+    for row, player, _event in matched:
+        by_player.setdefault(player["id"], {})[odds_client.PROP_MARKETS[row["market"]]] = row
+    return by_player, info["title"]
+
+
 def _fetch_scores_for_weeks(weeks):
     """{week: scores_by_team} for whichever of `weeks` ESPN's scoreboard has
     data for - skips (rather than raises past) any week that fails to fetch,
@@ -600,6 +653,167 @@ class Handler(BaseHTTPRequestHandler):
                 status=self.PROPS_REFRESH_ERROR_STATUS.get(result["reason"], 502),
             )
         return {**result, "status": odds_client.props_status()}
+
+    # -- routes: build-your-own parlay ---------------------------------------
+
+    @route("GET", r"^/api/builder/options$")
+    def get_builder_options(self, query):
+        """What a user can pick from when building a parlay by hand: this
+        week's games still to play, and for each team its players with the
+        props that apply to them. Players ruled out are left out (same rule
+        as the auto pool); doubtful/questionable ones are flagged. With
+        `book`, each prop also carries that sportsbook's line and price where
+        the book posts one."""
+        data = espn_client.get_projections(SEASON)
+        week = _query_int(query, "week", default=data["current_week"])
+        week = max(1, min(espn_client.MAX_WEEK, week))
+        risk = query.get("risk", ["balanced"])[0]
+        book = query.get("book", [""])[0]
+        ctx = _parlay_context(week)
+        book_rows, book_title = _book_rows_by_player(ctx, book, week)
+
+        players_by_team = {}
+        for p in data["players"]:
+            if p["team"] not in ctx["week_map"] or p["team"] in ctx["finished_teams"]:
+                continue
+            injury = ctx["injuries"].get(p["id"])
+            if parlay_engine._is_ruled_out(injury):
+                continue
+            options, source = parlay_engine.prop_options(p, week, risk)
+            if not options:
+                continue
+            rows = book_rows.get(p["id"], {})
+            for opt in options:
+                row = rows.get(opt["stat"])
+                if row is not None:
+                    opt["book_line"] = row["point"]
+                    opt["book_price"] = row["price"]
+            players_by_team.setdefault(p["team"], []).append({
+                "id": p["id"], "name": p["name"], "team": p["team"], "position": p["position"],
+                "projected_points_per_game": round(p["projected_points_per_game"], 1),
+                "source": source,
+                "injury_status": injury["status"] if injury else None,
+                "injury_note": injury["note"] if injury else None,
+                "props": options,
+            })
+        for team_players in players_by_team.values():
+            team_players.sort(key=lambda x: -x["projected_points_per_game"])
+
+        games, seen = [], set()
+        for team, info in sorted(ctx["week_map"].items(), key=lambda kv: (kv[1]["game_date"], kv[0])):
+            key = frozenset((team, info["opponent"]))
+            if key in seen or team in ctx["finished_teams"]:
+                continue
+            seen.add(key)
+            home = team if info["is_home"] else info["opponent"]
+            away = info["opponent"] if info["is_home"] else team
+            games.append({
+                "home": home, "away": away, "kickoff": info["game_date"],
+                "players": {home: players_by_team.get(home, []), away: players_by_team.get(away, [])},
+            })
+
+        return {
+            "season": SEASON, "week": week, "risk": risk,
+            "book": {"key": book, "title": book_title} if book else None,
+            "min_legs": MANUAL_PARLAY_MIN_LEGS, "max_legs": MANUAL_PARLAY_MAX_LEGS,
+            "games": games,
+        }
+
+    def _build_manual_legs(self, body):
+        """Shared by evaluate and save: turns the request's leg choices into
+        scored legs, validating as it goes. Returns (week, legs, ctx, book_title)."""
+        week = body.get("week")
+        if not isinstance(week, int) or not (1 <= week <= espn_client.MAX_WEEK):
+            raise ApiError("'week' must be an integer between 1 and 18.")
+        choices = body.get("legs")
+        if not isinstance(choices, list) or not (MANUAL_PARLAY_MIN_LEGS <= len(choices) <= MANUAL_PARLAY_MAX_LEGS):
+            raise ApiError(f"A parlay needs between {MANUAL_PARLAY_MIN_LEGS} and {MANUAL_PARLAY_MAX_LEGS} legs.")
+        book = body.get("book") or ""
+        if not isinstance(book, str):
+            raise ApiError("'book' must be a string.")
+
+        ctx = _parlay_context(week)
+        book_rows, book_title = _book_rows_by_player(ctx, book, week)
+
+        legs, seen = [], set()
+        for i, choice in enumerate(choices, start=1):
+            if not isinstance(choice, dict):
+                raise ApiError(f"Leg {i} is malformed.")
+            player = ctx["players_by_id"].get(choice.get("player_id"))
+            if player is None:
+                raise ApiError(f"Leg {i}: unknown player.")
+            stat = choice.get("stat")
+            if not isinstance(stat, str):
+                raise ApiError(f"Leg {i}: 'stat' is required.")
+            if (player["id"], stat) in seen:
+                raise ApiError(f"Leg {i}: {player['name']} {stat} is already in this parlay.")
+            seen.add((player["id"], stat))
+            if player["team"] not in ctx["week_map"]:
+                raise ApiError(f"Leg {i}: {player['name']}'s team ({player['team']}) is on a bye in week {week}.")
+            if player["team"] in ctx["finished_teams"]:
+                raise ApiError(f"Leg {i}: {player['name']}'s game has already finished.")
+            injury = ctx["injuries"].get(player["id"])
+            if parlay_engine._is_ruled_out(injury):
+                raise ApiError(f"Leg {i}: {player['name']} is listed as {injury['status']} and won't play.")
+            book_row = book_rows.get(player["id"], {}).get(stat) if book else None
+            if book and book_row is None:
+                raise ApiError(f"Leg {i}: {book_title} doesn't post a {stat} prop for {player['name']}.")
+            line = choice.get("line")
+            if line is not None and not isinstance(line, (int, float)):
+                raise ApiError(f"Leg {i}: 'line' must be a number.")
+            try:
+                legs.append(parlay_engine.build_manual_leg(
+                    player, week, stat, line=line, book_row=book_row,
+                    injury=injury, usage=ctx["usage"],
+                ))
+            except ValueError as exc:
+                raise ApiError(f"Leg {i}: {exc}")
+        return week, legs, ctx, book_title
+
+    @route("POST", r"^/api/builder/evaluate$")
+    def evaluate_manual_parlay(self, query):
+        """Scores a hand-built slip exactly as an auto-generated parlay is
+        scored (parlay_engine.score_parlay), plus weather warnings."""
+        body = self._read_json_body()
+        week, legs, ctx, book_title = self._build_manual_legs(body)
+        parlay = parlay_engine.score_parlay(
+            legs, ctx["schedule"], _team_strength(ctx["data"]["players"]), _market_odds_by_game(),
+        )
+        _attach_weather_warnings([parlay], ctx["schedule"], week)
+        return {"week": week, "book": {"key": body.get("book"), "title": book_title} if book_title else None,
+                "parlay": parlay}
+
+    @route("POST", r"^/api/builder/save$")
+    def save_manual_parlay(self, query):
+        """Saves a hand-built slip to My Picks: one parlay group holding one
+        pick per leg. Legs priced at a sportsbook keep that book's odds and
+        name; model-only legs are saved without odds, to be filled in on the
+        My Picks tab (a group's EV needs odds on every leg)."""
+        body = self._read_json_body()
+        week, legs, ctx, book_title = self._build_manual_legs(body)
+        stake = body.get("stake")
+        if stake is not None and not isinstance(stake, (int, float)):
+            raise ApiError("'stake' must be a number.")
+        notes = body.get("notes")
+        if notes is not None and not isinstance(notes, str):
+            raise ApiError("'notes' must be a string.")
+
+        group_id = storage.create_parlay_group(
+            sportsbook=book_title, total_stake=stake,
+            notes=notes or f"Built by hand on the Parlays tab (week {week}).",
+        )
+        pick_ids = []
+        for leg in legs:
+            pick_ids.append(storage.create_pick(
+                status="considered", market_type="player_prop", parlay_group_id=group_id,
+                player_id=leg["player_id"], player_name=leg["player"], team=leg["team"],
+                opponent=ctx["week_map"].get(leg["team"], {}).get("opponent"),
+                season=SEASON, week=week, stat=leg["stat"], label=leg["label"],
+                direction=leg["direction"], model_line=leg["line"], line_entered=leg["line"],
+                model_probability=leg["probability"], sportsbook=book_title,
+                odds_american=leg.get("book_price"),
+            ))
+        return {"group_id": group_id, "pick_ids": pick_ids, "group": storage.get_parlay_group(group_id)}
 
     @route("GET", r"^/api/parlays$")
     def get_parlays(self, query):

@@ -369,6 +369,168 @@ def build_book_legs(players, week, book_rows, events, position_filter="ALL", usa
     return _diversify_by_stat(legs), stats
 
 
+def score_parlay(legs, schedule=None, team_strength=None, market_odds_by_game=None):
+    """Everything the app says about a set of legs as a parlay: combined
+    probability, the model's fair odds, correlation warnings, game-script
+    summary, risk score, and - when every leg carries a sportsbook price -
+    what that book pays. Used for auto-generated combinations and for slips
+    the user builds by hand, so the two are scored identically."""
+    legs = list(legs)
+    combined_prob = 1.0
+    for leg in legs:
+        combined_prob *= leg["probability"]
+
+    decimal_odds = odds_math.fair_decimal_odds(combined_prob)
+    decimal_odds = round(decimal_odds, 2) if decimal_odds else None
+    american_odds = odds_math.decimal_to_american(decimal_odds)
+
+    normalized = correlation.attach_opponents(
+        [correlation.from_model_leg(leg) for leg in legs], schedule
+    )
+
+    parlay = {
+        "legs": legs,
+        "combined_probability": round(combined_prob, 4),
+        "estimated_decimal_odds": decimal_odds,
+        "estimated_american_odds": american_odds,
+        "correlation_warnings": correlation.analyze_correlations(normalized),
+        "game_script": correlation.generate_game_script_summary(normalized, team_strength, market_odds_by_game),
+        "risk_score": odds_math.risk_score([leg["probability"] for leg in legs]),
+    }
+
+    if legs and all("book_price" in leg for leg in legs):
+        # Real payout at the chosen book: every leg's decimal odds
+        # multiplied, which is how a sportsbook prices independent legs.
+        # `estimated_*` above stays the model's own fair odds, so the two
+        # can be compared side by side.
+        book_decimal = round(odds_math.combined_decimal_odds([leg["book_price"] for leg in legs]), 2)
+        parlay["book_decimal_odds"] = book_decimal
+        parlay["book_american_odds"] = odds_math.decimal_to_american(book_decimal)
+        book_implied = 1.0
+        for leg in legs:
+            book_implied *= leg["implied_probability"]
+        parlay["book_implied_probability"] = round(book_implied, 4)
+        # Books reprice same-game legs (they're correlated), so for these
+        # the multiplied price is an approximation of what the slip pays.
+        game_keys = [
+            frozenset({n["team"], n["opponent"]}) if n.get("opponent") else frozenset({n["team"]})
+            for n in normalized
+        ]
+        parlay["same_game"] = len(set(game_keys)) < len(game_keys)
+
+    return parlay
+
+
+# ---------------------------------------------------------------------------
+# Hand-built parlays
+# ---------------------------------------------------------------------------
+
+STAT_LABELS = {stat: (label, unit) for stat, label, unit, _positions, _cv in YARDAGE_PROPS}
+STAT_POSITIONS = {stat: positions for stat, _label, _unit, positions, _cv in YARDAGE_PROPS}
+STAT_CV = {stat: cv for stat, _label, _unit, _positions, cv in YARDAGE_PROPS}
+
+
+def prop_options(player, week, risk="balanced"):
+    """The props a user can pick for `player` when building a parlay by hand:
+    every yardage/reception stat that applies to the position and clears the
+    same minimum the auto pool uses, plus the touchdown prop. Each carries the
+    model's projected per-game average and the line the auto pool would have
+    used at `risk`, as a starting point the user can edit."""
+    per_game, _, source = espn_client.get_week_stats(player, week)
+    tier_factor = RISK_TIERS.get(risk, RISK_TIERS["balanced"])
+    options = []
+    for stat, label, unit, positions, _cv in YARDAGE_PROPS:
+        if player["position"] not in positions:
+            continue
+        mean = per_game[stat]
+        if mean < MIN_PER_GAME_THRESHOLDS[stat]:
+            continue
+        options.append({
+            "stat": stat, "label": label, "unit": unit, "direction": "Over",
+            "projected_avg": round(mean, 1),
+            "model_line": round(mean * tier_factor * 2) / 2,
+        })
+    td_lambda = per_game["pass_td"] if player["position"] == "QB" else per_game["rush_td"] + per_game["rec_td"]
+    if td_lambda > 0.15:
+        options.append({
+            "stat": "anytime_td", "direction": "Yes", "unit": "", "line": None,
+            "label": "Throws a TD Pass" if player["position"] == "QB" else "Anytime TD",
+            "projected_avg": round(td_lambda, 2), "model_line": None,
+        })
+    return options, source
+
+
+def build_manual_leg(player, week, stat, line=None, book_row=None, injury=None, usage=None):
+    """One leg for a stat and line the user chose, scored by the same model
+    as the auto pool but with NO probability clamp - a deliberately long-shot
+    leg is reported at its real (low) probability rather than refused.
+
+    `line` is required for yardage/reception stats (it's the user's Over
+    line); ignored for anytime_td. `book_row` (a cached prop row from
+    odds_client) prices the leg at the sportsbook, in which case its line is
+    the book's and `line` must match it. Raises ValueError with a plain
+    message for a stat that doesn't apply to the position or a missing line.
+    """
+    per_game, _, source = espn_client.get_week_stats(player, week)
+    cv_multiplier = WEEKLY_PROJECTION_CV_MULTIPLIER if source == "weekly_projection" else 1.0
+
+    if stat == "anytime_td":
+        if book_row is not None:
+            # The book's market is "scores a TD" - rushing + receiving for everyone.
+            td_lambda = per_game["rush_td"] + per_game["rec_td"]
+            label = "Anytime TD"
+        elif player["position"] == "QB":
+            td_lambda, label = per_game["pass_td"], "Throws a TD Pass"
+        else:
+            td_lambda, label = per_game["rush_td"] + per_game["rec_td"], "Anytime TD"
+        prob = _prob_anytime_td(td_lambda) if td_lambda > 0 else 0.0
+        unit, line, direction, projected = "", None, "Yes", round(td_lambda, 2)
+    else:
+        if stat not in STAT_LABELS:
+            raise ValueError(f"Unknown stat '{stat}'.")
+        if player["position"] not in STAT_POSITIONS[stat]:
+            raise ValueError(f"{STAT_LABELS[stat][0]} doesn't apply to a {player['position']}.")
+        if book_row is not None:
+            line = book_row["point"]
+        if line is None:
+            raise ValueError(f"A line is required for {STAT_LABELS[stat][0]}.")
+        line = float(line)
+        if line <= 0:
+            raise ValueError("The line must be greater than zero.")
+        mean = per_game[stat]
+        prob = _prob_over(mean, STAT_CV[stat] * cv_multiplier * mean, line)
+        label, unit = STAT_LABELS[stat]
+        direction, projected = "Over", round(mean, 1)
+
+    leg = {
+        "player_id": player["id"],
+        "player": player["name"],
+        "team": player["team"],
+        "position": player["position"],
+        "stat": stat,
+        "label": label,
+        "unit": unit,
+        "line": line,
+        "direction": direction,
+        "projected_avg": projected,
+        "probability": round(prob, 3),
+        "source": source,
+        "week": week,
+        **_usage_fields((usage or {}).get(player["id"], {}).get(week)),
+        **_injury_fields(injury),
+    }
+    if book_row is not None:
+        decimal = odds_math.american_to_decimal(book_row["price"])
+        implied = odds_math.implied_probability(book_row["price"])
+        leg.update({
+            "book_price": book_row["price"],
+            "book_decimal": round(decimal, 3),
+            "implied_probability": round(implied, 3),
+            "edge": round(prob - implied, 3),
+        })
+    return leg
+
+
 SORT_OPTIONS = ("probability", "payout", "market")
 
 
@@ -492,49 +654,7 @@ def build_parlays(legs, num_legs=3, candidate_pool=24, top_n=10, require_distinc
             if len(categories) != num_legs:
                 continue  # keep each parlay's legs on different prop types
 
-        combined_prob = 1.0
-        for leg in combo:
-            combined_prob *= leg["probability"]
-
-        decimal_odds = odds_math.fair_decimal_odds(combined_prob)
-        decimal_odds = round(decimal_odds, 2) if decimal_odds else None
-        american_odds = odds_math.decimal_to_american(decimal_odds)
-
-        normalized = correlation.attach_opponents(
-            [correlation.from_model_leg(leg) for leg in combo], schedule
-        )
-
-        parlay = {
-            "legs": list(combo),
-            "combined_probability": round(combined_prob, 4),
-            "estimated_decimal_odds": decimal_odds,
-            "estimated_american_odds": american_odds,
-            "correlation_warnings": correlation.analyze_correlations(normalized),
-            "game_script": correlation.generate_game_script_summary(normalized, team_strength, market_odds_by_game),
-            "risk_score": odds_math.risk_score([leg["probability"] for leg in combo]),
-        }
-
-        if all("book_price" in leg for leg in combo):
-            # Real payout at the chosen book: every leg's decimal odds
-            # multiplied, which is how a sportsbook prices independent legs.
-            # `estimated_*` above stays the model's own fair odds, so the two
-            # can be compared side by side.
-            book_decimal = round(odds_math.combined_decimal_odds([leg["book_price"] for leg in combo]), 2)
-            parlay["book_decimal_odds"] = book_decimal
-            parlay["book_american_odds"] = odds_math.decimal_to_american(book_decimal)
-            book_implied = 1.0
-            for leg in combo:
-                book_implied *= leg["implied_probability"]
-            parlay["book_implied_probability"] = round(book_implied, 4)
-            # Books reprice same-game legs (they're correlated), so for these
-            # the multiplied price is an approximation of what the slip pays.
-            game_keys = [
-                frozenset({n["team"], n["opponent"]}) if n.get("opponent") else frozenset({n["team"]})
-                for n in normalized
-            ]
-            parlay["same_game"] = len(set(game_keys)) < len(game_keys)
-
-        best.append(parlay)
+        best.append(score_parlay(combo, schedule, team_strength, market_odds_by_game))
 
     best.sort(key=lambda pl: _parlay_sort_key(pl, sort_by), reverse=True)
 

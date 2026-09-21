@@ -82,6 +82,28 @@
 
   <section id="parlays"></section>
 
+  <section class="builder" id="builder">
+    <h2>Build Your Own Parlay</h2>
+    <p class="section-hint">Pick games, then players and props from them. The slip is scored the same way the
+      generated parlays are - same model, same correlation and weather checks - and uses the Week and Odds
+      settings above. Edit a line to see how the probability moves.</p>
+    <div id="builderGames" class="builder-games"></div>
+    <div class="builder-body">
+      <div id="builderPlayers" class="builder-players"></div>
+      <div class="builder-slip">
+        <h3>Your slip <span id="builderSlipCount" class="section-hint"></span></h3>
+        <div id="builderSlip"></div>
+        <div id="builderResult"></div>
+        <div class="builder-actions">
+          <label>Stake $ <input id="builderStake" type="number" min="0" step="1" placeholder="optional"></label>
+          <button id="builderSave" disabled title="Saves this slip to My Picks as a parlay group, one pick per leg">Save to My Picks</button>
+          <button id="builderClear" class="secondary">Clear</button>
+          <span id="builderMsg" class="section-hint"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="browse">
     <h2>Browse Season Projections</h2>
     <input id="playerSearch" type="text" placeholder="Search player name...">

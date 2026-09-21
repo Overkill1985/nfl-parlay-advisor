@@ -132,6 +132,31 @@ only as far as needed to fill the list. Three things here were learned the hard 
 `games_in_parlays` in the response (and the UI's summary line) reports coverage so it's
 visible, not just trusted.
 
+### Build-your-own parlays
+
+Same engine, one shared scorer. `parlay_engine.score_parlay(legs, ...)` is what
+`build_parlays` runs on every combination and what `POST /api/builder/evaluate` runs on a
+hand-built slip, so the two can never drift (a test asserts a generated parlay re-scored
+through it is identical). The differences from the auto path are deliberate:
+- `build_manual_leg` has **no probability clamp**: the auto pool drops legs under 50% /
+  over 97%, but a user who picks Nacua over 9.5 receptions should see "6%", not an error.
+- `prop_options` offers every stat that fits the position and clears the auto pool's
+  minimum, with the risk tier's line as an editable starting point. In sportsbook mode
+  only props the book posts are offered and the book's line is fixed (the UI hides the
+  line input); the server rejects a leg the book doesn't price rather than silently
+  falling back to a model line.
+- Anytime-TD for a QB is "throws a TD pass" in model mode but rushing+receiving at a book,
+  exactly as in `build_book_legs` - `build_manual_leg` mirrors that split.
+- `Handler._build_manual_legs` is the single validator for evaluate and save; every
+  rejection names the leg and the reason (bye, finished game, ruled-out player, stat that
+  doesn't fit the position, missing line, book doesn't post that prop). It's tested
+  directly with a synthetic `_parlay_context`.
+- Save writes a `parlay_groups` row plus one `picks` row per leg with `model_probability`
+  and `model_line`; `odds_american` is the book's price in sportsbook mode and null
+  otherwise, which the My Picks EV needs filled in - the UI says so after saving.
+- `_parlay_context(week)` gathers everything both paths need in one place; every call in
+  it is a cache read (nothing spends Odds API credits).
+
 ### Sportsbook prop odds (the "Odds" dropdown on the Parlays tab)
 
 Picking a sportsbook prices parlays at that book's real lines and odds instead of the
