@@ -360,7 +360,7 @@ select:disabled {
 /* Build-your-own parlay (Parlays tab) */
 .builder {
   max-width: 960px;
-  margin: 1.5rem auto;
+  margin: 0 auto 1.5rem;
 }
 .builder h2 { margin-bottom: 0.25rem; }
 .builder h3 { margin: 0 0 0.5rem; font-size: 1rem; }

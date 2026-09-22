@@ -22,6 +22,7 @@
 
 <nav class="tab-nav">
   <button data-tab="parlays" class="active">Parlays</button>
+  <button data-tab="builder">Build Parlay</button>
   <button data-tab="picks">My Picks</button>
   <button data-tab="dashboard">Dashboard</button>
   <button data-tab="history">History</button>
@@ -82,11 +83,40 @@
 
   <section id="parlays"></section>
 
+  <section class="browse">
+    <h2>Browse Season Projections</h2>
+    <input id="playerSearch" type="text" placeholder="Search player name...">
+    <div id="playerTableWrap"></div>
+  </section>
+</div>
+
+<div id="tab-builder" class="tab-panel hidden">
+  <section class="controls">
+    <label>
+      Week
+      <select id="builderWeek"></select>
+    </label>
+    <label>
+      Odds
+      <select id="builderBook" title="Price the slip at a real sportsbook's lines and odds instead of this app's own model lines">
+        <option value="">Model (fair odds)</option>
+      </select>
+    </label>
+    <label>
+      Starting lines
+      <select id="builderRisk" title="Where each prop's line starts when you add it - you can edit it in the slip">
+        <option value="safe">Safe (lower lines)</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="boom">Boom (higher lines)</option>
+      </select>
+    </label>
+    <span id="builderStatus" class="section-hint"></span>
+  </section>
+
   <section class="builder" id="builder">
-    <h2>Build Your Own Parlay</h2>
     <p class="section-hint">Pick games, then players and props from them. The slip is scored the same way the
-      generated parlays are - same model, same correlation and weather checks - and uses the Week and Odds
-      settings above. Edit a line to see how the probability moves.</p>
+      generated parlays are - same model, same correlation and weather checks. Edit a line to see how the
+      probability moves.</p>
     <div id="builderGames" class="builder-games"></div>
     <div class="builder-body">
       <div id="builderPlayers" class="builder-players"></div>
@@ -104,11 +134,6 @@
     </div>
   </section>
 
-  <section class="browse">
-    <h2>Browse Season Projections</h2>
-    <input id="playerSearch" type="text" placeholder="Search player name...">
-    <div id="playerTableWrap"></div>
-  </section>
 </div>
 
 <div id="tab-picks" class="tab-panel hidden">
@@ -286,6 +311,7 @@
 
 <script src="/common.js"></script>
 <script src="/parlays.js"></script>
+<script src="/builder.js"></script>
 <script src="/picks.js"></script>
 <script src="/dashboard.js"></script>
 <script src="/history.js"></script>

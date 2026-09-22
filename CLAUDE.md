@@ -132,7 +132,7 @@ only as far as needed to fill the list. Three things here were learned the hard 
 `games_in_parlays` in the response (and the UI's summary line) reports coverage so it's
 visible, not just trusted.
 
-### Build-your-own parlays
+### Build-your-own parlays (the Build Parlay tab)
 
 Same engine, one shared scorer. `parlay_engine.score_parlay(legs, ...)` is what
 `build_parlays` runs on every combination and what `POST /api/builder/evaluate` runs on a
@@ -348,10 +348,13 @@ becomes a 400 rather than an uncaught `ValueError`.
 ### Frontend
 
 Vanilla JS/CSS, no build step, no framework. `static/common.js` holds shared
-fetch/format helpers and tab-switching; one file per tab (`parlays.js`, `picks.js`,
-`dashboard.js`, `history.js`) listens for a `tabshown` custom event to lazy-load its
-data rather than fetching on page load. Scripts are loaded in dependency order in
-`index.html` and rely on globals rather than modules/bundling.
+fetch/format helpers and tab-switching; one file per tab (`parlays.js`, `builder.js`,
+`picks.js`, `dashboard.js`, `history.js`) listens for a `tabshown` custom event to
+lazy-load its data rather than fetching on page load. Scripts are loaded in dependency
+order in `index.html` and rely on globals rather than modules/bundling - which means
+top-level `const`/`let` names are shared across files: `builder.js` wraps itself in an
+IIFE because it wants its own `weekSelect`/`bookSelect`/`riskSelect` for the Build Parlay
+tab's controls, and reuses `renderParlayCard`/`fmtLeg`/`trackLeg` from `parlays.js`.
 
 ### `_bmad/` and `.claude/skills/bmad-*`
 

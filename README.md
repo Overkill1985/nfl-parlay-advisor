@@ -162,15 +162,19 @@ mapping, not the app.
   usually lower than the multiplied price.
 - **Track**: carries a leg's player/stat/line/probability into the My Picks form - and,
   for a sportsbook-priced leg, the book's actual odds and name.
-- **Build Your Own Parlay**: below the generated list. Pick one or more of the week's
-  remaining games, then players and props from them; the slip is scored by the same
+- **Browse Season Projections**: a searchable table of ESPN's full projections.
+
+**Build Parlay tab** - assemble a slip by hand:
+- Pick one or more of the week's remaining games, then players and props from them; the
+  slip is scored by the same
   model and shown as the same card (fair odds, correlation and weather notes, and the
   book's payout when a sportsbook is selected). Edit any line to see the probability
   move - a long-shot line is reported at its real low probability, not refused. Players
   who are out never appear; doubtful/questionable ones are badged. **Save to My Picks**
   stores the slip as a parlay group, one pick per leg, with the book's odds when you
-  built it at a sportsbook (enter odds by hand otherwise to see the group's EV).
-- **Browse Season Projections**: a searchable table of ESPN's full projections.
+  built it at a sportsbook (enter odds by hand otherwise to see the group's EV). The tab has
+  its own Week and Odds selectors; **Starting lines** sets where each prop's line begins
+  (Safe / Balanced / Boom) before you edit it. Prop odds are fetched on the Parlays tab.
 
 **My Picks tab** - track real sportsbook odds:
 - Log any player prop, moneyline, spread, or total with your sportsbook's actual odds,
@@ -214,7 +218,7 @@ cache_io.py        Atomic (temp-file + rename) JSON cache writes, shared by the 
 storage.py         sqlite storage for picks, parlay groups, model snapshots
 history.py         Grading, calibration reporting, mechanical backtesting
 server.py          Local HTTP server (regex router + all JSON endpoints)
-static/            Frontend - common.js, parlays.js, picks.js, dashboard.js, history.js
+static/            Frontend - common.js, parlays.js, builder.js, picks.js, dashboard.js, history.js
 tests/             unittest suite - pure-function tests, no network
 cache/             Cached ESPN/nflverse/odds/weather responses (gitignored, created at runtime)
 data/              sqlite db + migration backups (gitignored, created at runtime)
