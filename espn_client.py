@@ -430,19 +430,25 @@ def _int_or_none(raw):
         return None
 
 
-def _fetch_players_from_espn(season):
-    espn_filter = {
+def players_filter(season, weeks=()):
+    """The x-fantasy-filter for the players request.
+
+    ``additionalValue`` names the stat sets ESPN returns, by code: "00<season>"
+    actuals (the season total plus each played week), "10<season>" the season
+    projection, and "11<season><week>" one week's projection. ESPN returns only
+    the sets named here - a high "top scoring periods" value does not pull in
+    weekly projections on its own (checked 2026-10-17: without "1120266" no
+    player had a week-6 projection; with it, all did). So each week whose
+    projections are wanted has to be listed in ``weeks``.
+    """
+    codes = [f"00{season}", f"10{season}", f"00{season - 1}"]
+    codes += [f"11{season}{week}" for week in weeks if 1 <= week <= MAX_WEEK]
+    return {
         "players": {
             "filterActive": {"value": True},
-            # A high "top scoring periods" value pulls back every period ESPN
-            # has data for (season total + all weeks), not just the season
-            # total - this is what lets weekly projections show up here
-            # automatically once ESPN publishes them, with no code changes.
             "filterStatsForTopScoringPeriodIds": {
                 "value": MAX_WEEK + 2,
-                "additionalValue": [
-                    f"00{season}", f"10{season}", f"00{season - 1}",
-                ],
+                "additionalValue": codes,
             },
             "limit": FILTER_LIMIT,
             "sortDraftRanks": {
@@ -452,6 +458,10 @@ def _fetch_players_from_espn(season):
             },
         }
     }
+
+
+def _fetch_players_from_espn(season, weeks=()):
+    espn_filter = players_filter(season, weeks)
     req = urllib.request.Request(
         PLAYERS_URL_TMPL.format(season=season),
         headers={
@@ -590,7 +600,9 @@ def get_projections(season, force_refresh=False):
                 _normalize_week_keys(cached["players"])
                 return cached
 
-    data = _fetch_players_from_espn(season)
+    current_week = get_current_week(season)
+    # This week's projections, and next week's in case ESPN posts them early.
+    data = _fetch_players_from_espn(season, weeks=(current_week, current_week + 1))
     players = []
     for entry in data.get("players", []):
         parsed = _extract_player(entry, season)
@@ -602,7 +614,7 @@ def get_projections(season, force_refresh=False):
     result = {
         "season": season,
         "fetched_at": time.time(),
-        "current_week": get_current_week(season),
+        "current_week": current_week,
         "players": players,
     }
 

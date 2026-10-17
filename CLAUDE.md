@@ -65,7 +65,10 @@ and the background refresh loop can write concurrently).
 days before that week's games. Until then, `get_week_stats()` falls back to
 `season_total / 17` as a per-game estimate. Every consumer (`parlay_engine.py`) tags
 which source was used (`weekly_projection` vs `season_pace_estimate`) rather than
-hiding the distinction.
+hiding the distinction. **The request filter must name each week it wants**
+(`players_filter`: `"11<season><week>"` per week; `get_projections` asks for the current
+and next week) - ESPN returns only the stat sets listed in `additionalValue`, and until
+2026-10-17 the filter named none, so every leg silently used the season-pace fallback.
 
 **Int-keyed dicts through the JSON cache**: `weekly_projections`/`weekly_actuals` are
 `{week_number: {...}}` dicts. JSON has no integer-keyed-object concept, so every
