@@ -7,7 +7,7 @@
 # Debian's repos but not yet in the image Docker Hub was serving). Applying
 # `apt-get upgrade` at build time closes that gap regardless of when the
 # base image itself gets rebuilt.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
